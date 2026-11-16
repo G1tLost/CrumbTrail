@@ -10,8 +10,45 @@ def csv_cell(value):
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
 
 
+def session_section(view):
+    esc = lambda value: escape(str(value), quote=True)
+    members = {event["event_id"]: event for event in view["events"]}
+
+    def event_list(ids):
+        return "<ul>" + "".join('<li><a href="#' + esc(eid) + '">' + esc(members[eid]["timestamp_utc"]) + " — " +
+            esc(members[eid]["label"]) + "</a><br><small>Source fields: " + esc(source_fields(members[eid])) + "</small></li>" for eid in ids) + "</ul>"
+
+    def source_fields(event):
+        return ", ".join(source["field"] + "=" + source["raw"] for source in event["source_logon_ids"]) or "none"
+
+    summary = view["summary"]
+    html = '<section id="logon-sessions"><h2>Logon-session views</h2><p>' + esc(summary["sessions"]) + " observed starts · " + esc(summary["linked_events"]) + " ID-linked events · " + esc(summary["unlinked_events"]) + " unlinked · " + esc(summary["ambiguous_events"]) + ' ambiguous. <a href="sessions.json">Session JSON with source references</a></p>'
+    html += "<ul>" + "".join("<li>" + esc(limit) + "</li>" for limit in view["limitations"]) + "</ul>"
+    for session in view["sessions"]:
+        scope = session["scope"]
+        html += '<details id="' + esc(session["session_id"]) + '"><summary>' + esc(scope["hostname"]) + " / " + esc(scope["client_id"]) + " · logon " + esc(session["logon_id"]) + " · start " + esc(session["start_utc"]) + (" [SYNTHETIC]" if scope["simulation"] else "") + "</summary>"
+        html += "<p>Account recorded by the start event: " + esc(session["start_account"] or "unavailable") + ". Logoff: " + esc(session["end_utc"] or "unavailable") + ". Association cutoff: " + esc(session["cutoff_utc"] or "unavailable") + ".</p>"
+        if session["cutoff_event_id"]:
+            html += '<p><a href="#' + esc(session["cutoff_event_id"]) + '">Boundary source event</a></p>'
+        html += "<ul>" + "".join("<li>" + esc(limit) + "</li>" for limit in session["limitations"]) + "</ul>" + event_list(session["event_ids"]) + "</details>"
+    for group in view["unbounded_id_groups"]:
+        html += "<details><summary>Unbounded ID group: " + esc(group["scope"]["hostname"]) + " · " + esc(group["logon_id"]) + "</summary><p>This group does not establish a complete session.</p>" + event_list(group["event_ids"]) + "</details>"
+    for status, title in (("ambiguous", "Ambiguous events"), ("unlinked", "Unlinked events")):
+        events = [event for event in view["events"] if event["status"] == status]
+        html += "<details><summary>" + title + " (" + str(len(events)) + ")</summary><ul>"
+        for event in events:
+            html += '<li><a href="#' + esc(event["event_id"]) + '">' + esc(event["timestamp_utc"]) + " · " + esc(event["scope"]["hostname"]) + " · " + esc(event["label"]) + "</a> — " + esc(" ".join(view["reason_descriptions"][reason] for reason in event["reason_codes"]))
+            html += "<br><small>Source fields: " + esc(source_fields(event)) + "</small>"
+            if event["candidate_session_ids"]:
+                html += "<p>Possible starts: " + ", ".join('<a href="#' + esc(candidate) + '">' + esc(candidate) + "</a>" for candidate in event["candidate_session_ids"]) + "</p>"
+            html += "</li>"
+        html += "</ul></details>"
+    return html + "</section>"
+
+
 def write_report(case, result):
     save(case.root / "timeline.json", result)
+    save(case.root / "sessions.json", result["session_view"])
     fields = ["event_id", "timestamp_utc", "hostname", "channel", "event_code", "kind", "label", "account", "image", "command_line", "target", "simulation"]
     with (case.root / "timeline.csv").open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.writer(stream)
@@ -43,5 +80,6 @@ h1,h2{color:#163a54}a{color:#075985}table{width:100%;border-collapse:collapse;ba
     page += "<h2>Coverage</h2><ul>" + (gaps or "<li>No reported gaps in the supplied selected-channel coverage.</li>") + "</ul>"
     page += "<p>Excluded outside the case window: " + esc(summary["excluded_outside_window"]) + "; deduplicated rows: " + esc(summary["duplicate_rows"]) + ".</p>"
     page += "<h2>Findings</h2><ul>" + (findings or "<li>No configured rule matched; this is not a clean-host verdict.</li>") + "</ul>"
+    page += session_section(result["session_view"])
     page += '<h2>Timeline (UTC)</h2><div class="table"><table><thead><tr><th>UTC</th><th>Endpoint</th><th>Observation</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div></body></html>"
     (case.root / "report.html").write_text(page, encoding="utf-8")

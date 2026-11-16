@@ -8,6 +8,7 @@ from . import __version__
 from .events import analyze
 from .native import data_path, run_local
 from .report import write_report
+from .sessions import build_session_view
 from .storage import Case, CaseError, MAX_BYTES, case_lock
 
 LAB_CLIENT = "C.0123456789abcdef"
@@ -23,6 +24,7 @@ def parser():
         ("import", "Preserve a native artifact JSON/JSONL export"),
         ("local", "Parse a supplied EVTX directory through local Velociraptor"),
         ("analyze", "Rebuild the offline report after integrity verification"),
+        ("sessions", "Show source-ID-backed logon sessions, unlinked events, and ambiguity"),
         ("verify", "Verify raw bytes and source provenance"),
         ("demo", "Create an inert deterministic Windows fixture case"),
         ("lab", "Read the inert fixture through the actual local VQL engine"),
@@ -35,6 +37,8 @@ def parser():
             command.add_argument("--case-id")
         if name in ("bind", "import", "local"):
             command.add_argument("--client-id", required=True)
+        if name == "sessions":
+            command.add_argument("--client-id", help="Filter the printed view to one bound endpoint")
         if name == "bind":
             command.add_argument("--hostname", required=True)
             command.add_argument("--org", default="root")
@@ -58,6 +62,8 @@ def execute(args):
     with case_lock(args.root):
         # Re-open metadata only after acquiring the cross-process lock.
         case = Case(args.root)
+        if args.command == "sessions" and args.client_id:
+            case.binding(args.client_id)
         if args.command in ("demo", "lab"):
             case.bind(LAB_CLIENT, "LAB-WIN01")
             if args.command == "lab":
@@ -81,6 +87,11 @@ def execute(args):
                 run_local(case, args.client_id, args.velociraptor, log_directory=args.log_directory)
         result = analyze(case)
         write_report(case, result)
+        if args.command == "sessions":
+            view = result["session_view"] if not args.client_id else build_session_view(
+                [event for event in result["events"] if event["client_id"] == args.client_id])
+            print(json.dumps(view, indent=2))
+            return 2 if result["gaps"] else 0
         print(json.dumps({**result["summary"], "root": str(case.root), "report": str(case.root / "report.html")}, indent=2))
         return 2 if result["gaps"] else 0
 

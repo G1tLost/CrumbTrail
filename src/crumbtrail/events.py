@@ -30,6 +30,8 @@ def normalize(case, row, bound, simulation):
     channel = str(row.get("Channel") or system.get("Channel") or "")
     if channel not in LOGS:
         raise CaseError("Unsupported event channel: " + channel)
+    provider = system.get("Provider") or row.get("Provider") or ""
+    provider = str(provider.get("Name") or "") if isinstance(provider, dict) else str(provider)
     code = row.get("EventID", system.get("EventID"))
     if isinstance(code, dict):
         code = code.get("Value")
@@ -79,13 +81,19 @@ def normalize(case, row, bound, simulation):
     sha = match.group(1).lower() if match else hashes.lower() if re.fullmatch(r"[a-fA-F0-9]{64}", hashes) else None
     record_id = row.get("EventRecordID", system.get("EventRecordID"))
     identity = [case.meta["case_id"], bound, channel, code, record_id, utc, data, simulation]
+    if provider:
+        identity.append({"provider": provider})
+    source_logon_ids = [dict(field=field, raw=str(data[field]), value=logon_id(data[field]))
+                        for field in ("LogonId", "TargetLogonId", "SubjectLogonId") if field in data]
     return dict(event_id="EVT-" + digest(encode(identity))[:24], timestamp_utc=utc,
                 timestamp_original=at, client_id=bound["client_id"], org_id=bound["org_id"],
                 hostname=host, channel=channel, event_code=code, record_id=record_id,
+                provider=provider,
                 kind=kind, label=label, account=account.casefold(), image=image, command_line=command,
                 target=target, process_guid=guid(data.get("ProcessGuid")),
                 parent_process_guid=guid(data.get("ParentProcessGuid")),
                 logon_id=logon_id(data.get("LogonId") or data.get("TargetLogonId") or data.get("SubjectLogonId")),
+                source_logon_ids=source_logon_ids,
                 sha256=sha, simulation=simulation, references=[], finding_ids=[])
 
 
@@ -134,6 +142,8 @@ def correlate(events):
 
 
 def analyze(case):
+    from .sessions import build_session_view
+
     case.verify()
     unique, gaps, raw_events, excluded = {}, [], 0, 0
     manifest = case.manifest()
@@ -176,6 +186,7 @@ def analyze(case):
     events = sorted(unique.values(), key=lambda e: (timestamp(e["timestamp_utc"]), e["event_id"]))
     findings = correlate(events)
     return dict(schema=1, tool="CrumbTrail", case=case.meta, events=events, findings=findings, gaps=gaps,
+                session_view=build_session_view(events),
                 summary=dict(events=len(events), findings=len(findings), gaps=len(gaps), artifacts=len(manifest["artifacts"]),
                              raw_event_rows=raw_events, excluded_outside_window=excluded,
                              duplicate_rows=raw_events - excluded - len(events)))

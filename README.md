@@ -1,8 +1,8 @@
 # CrumbTrail
 
-Independent Windows event triage with original-byte preservation, a UTC timeline, and an offline report. CrumbTrail 0.1.0 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory through the local Velociraptor engine. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
+Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.2.0 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory through the local Velociraptor engine. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
 
-The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Runtime Python dependencies: standard library only, Python 3.11 or newer. Velociraptor is optional for `demo`, `import`, `analyze`, and `verify`; it is required for `lab` and `local`.
+The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Runtime Python dependencies: standard library only, Python 3.11 or newer. Velociraptor is optional for `demo`, `import`, `analyze`, `sessions`, and `verify`; it is required for `lab` and `local`.
 
 ## Install and try
 
@@ -17,6 +17,8 @@ python -m venv .venv
 Open `cases/demo/report.html`. The CLI equivalent in an activated environment is `crumbtrail demo --root ./cases/demo`. Use a new directory for every demo/lab run; existing cases are never overwritten.
 
 Expected deterministic fixture result: **21 distinct Windows events, four findings from three rule types, one duplicate row, five covered channels, zero gaps**. The fixture contains 22 event rows and five coverage rows. Findings consist of two logon/process associations, one recovery-suppression observation, and one rapid file-creation/recovery-note association. Benign backup activity does not trigger the file-burst rule. The fixture is telemetry text; no malicious command in it is executed. All its derived events are labeled synthetic.
+
+The demo's session view has one observed start, three events linked by explicit IDs, 18 unlinked events, and no ambiguous events. A process GUID shared with a linked process does not give a file event a missing logon ID.
 
 ## Native inert lab
 
@@ -53,7 +55,26 @@ crumbtrail local --root D:\Cases\example --client-id C.0123456789abcdef `
 
 Expected filenames are `Security.evtx`, `System.evtx`, `Microsoft-Windows-Sysmon%4Operational.evtx`, `Microsoft-Windows-PowerShell%4Operational.evtx`, and `Microsoft-Windows-Windows Defender%4Operational.evtx`. Missing files remain coverage gaps. A log directory is mandatory; the CLI never silently falls back to current-host logs. The parser reads only selected IDs in the case window, not every event. The selected IDs are `1`, `3`, `11`, `15`, `104`, `1102`, `1116`, `1117`, `4104`, `4624`, `4625`, `4688`, `4697`, `4698`, and `7045`; interpretation also checks the channel.
 
-The two artifact YAML files are packaged under `src/crumbtrail/data`. They may be installed in an existing Velociraptor deployment using its normal artifact management, then the full unnamed source can be exported for `import`. **Version 0.1 has no remote API client, artifact installer, server provisioning, remote scheduling, pagination, or collection resume command.** Do not treat a local lab pass as validation of a server deployment. [Velociraptor server API documentation](https://docs.velociraptor.app/docs/server_automation/server_api/)
+The two artifact YAML files are packaged under `src/crumbtrail/data`. They may be installed in an existing Velociraptor deployment using its normal artifact management, then the full unnamed source can be exported for `import`. **Version 0.2 has no remote API client, artifact installer, server provisioning, remote scheduling, pagination, or collection resume command.** Do not treat a local lab pass as validation of a server deployment. [Velociraptor server API documentation](https://docs.velociraptor.app/docs/server_automation/server_api/)
+
+## Logon-session views
+
+```powershell
+crumbtrail sessions --root D:\Cases\example
+crumbtrail sessions --root D:\Cases\example --client-id C.0123456789abcdef
+```
+
+The command verifies original evidence under the case lock, rebuilds the full report, and prints JSON for all hosts or the requested bound client. Filtering affects printed output only; saved case reports remain complete. `analyze`, `import`, `demo`, and `lab` also build the view automatically. Open **Logon-session views** in `report.html`, inspect `sessions.json`, or read `timeline.json`'s additive `session_view` field. The existing timeline CSV remains unchanged.
+
+Views use valid explicit `LogonId`, `TargetLogonId`, and `SubjectLogonId` fields, scoped by organization, client ID, hostname, and simulation status. The raw field name/value and normalized numeric ID stay visible. A Security 4624 start uses its **TargetLogonId**; its initiating subject ID does not become the new session. Providerless legacy start records remain usable, while an explicitly different provider is rejected as a start. Other events containing distinct usable IDs remain ambiguous; no account, process GUID, process ID, or nearby timestamp supplies a missing ID.
+
+Repeated starts with the same ID in one boundary context remain separate observed-start views. Their other ID-matching events stay ambiguous; the tool does not choose the closest start. Events preceding the only observed start remain unlinked. An ID without a start forms an explicitly unbounded ID group, which is not asserted to be a single complete session. Every linked, unlinked, and ambiguous event retains its original raw references. Boundary/source limitations do not remove the event from the main timeline.
+
+Supplied Security **4634** records close their `TargetLogonId` context only when the provider is `Microsoft-Windows-Security-Auditing`. Microsoft distinguishes completed session termination from a 4647 logoff request and notes that IDs can be reused after reboot. [Microsoft 4634 documentation](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4634)
+
+Supplied Security **4608** records with that same provider establish a conservative startup cutoff for the host. A same-ID event after a logoff or startup cannot link to an earlier start without a new start record. A startup cutoff does not invent an exact preceding logoff time. Events sharing a boundary's exact timestamp remain ambiguous because ordering is unknown. [Microsoft 4608 documentation](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4608)
+
+Missing/unrecognized providers do not establish these logoff/startup boundaries. Other markers, boot IDs, and inferred boundaries are not supported. **The bundled native artifact's selected IDs are unchanged and do not collect 4634 or 4608**; boundary handling applies when those records are already present in an imported native export. Where boundaries are absent, end time and boot context remain explicitly unknown. Views describe source-ID associations, not actor attribution or complete-session reconstruction.
 
 ## Evidence and interpretation
 
@@ -65,11 +86,14 @@ Each case contains:
 | `raw/<sha256>.json` | Exact original imported bytes, including duplicates and out-of-window rows |
 | `manifest.json` | Original hash, byte/row count, source, endpoint/organization, simulation flag, and provenance checksum |
 | `timeline.json` | Normalized events, per-row raw references, findings, coverage gaps, and counts |
+| `sessions.json` | Observed starts, explicit boundaries, source-ID membership, unbounded groups, and unlinked/ambiguous events with raw references |
 | `timeline.csv` | Portable event table with spreadsheet-formula neutralization |
 | `report.html` | Self-contained offline report with escaped evidence text and local raw links |
 | `collection/run-*/` | Native execution request/stdout/stderr diagnostics, when applicable |
 
 Every retained raw event reference includes the original artifact hash and its one-based row number in the parsed result sequence. Duplicate events share one timeline event while retaining all references. Event IDs include the case and endpoint identities. Timestamp offsets normalize to UTC; timestamps without a timezone are rejected. Events outside the inclusive case window remain in raw evidence and are counted as excluded from the timeline.
+
+Version 0.2 includes a supplied nonempty provider in derived event identity so otherwise identical trusted/unrecognized provider records cannot merge. Rebuilding an older case may therefore change derived event and finding IDs for records that contain a provider. Providerless fixture identities and original raw hashes remain unchanged; regenerate derived exports together.
 
 Run full verification before handoff or rebuilding derived views:
 
@@ -99,6 +123,8 @@ with case_lock("D:/Cases/example"):
 ```
 
 `Case.create(root, start, end, case_id=None)`, `case.bind(client_id, hostname, org="root")`, and `case.preserve(raw_bytes, client_id, source, simulation=False, details=None)` expose the same offline workflow. Supply complete native result objects, including coverage. The CLI rejects concurrent case operations using a nonblocking OS file lock. Direct API users must acquire `case_lock(root)` and then reopen `Case` before reading or changing an existing case, as above; methods do not nest their own locks. `Case.create` locks creation internally. There is no multiuser authorization layer.
+
+`analyze(case)["session_view"]` supplies the session view. `crumbtrail.sessions.build_session_view(events)` also accepts current normalized events without modifying them; pass the complete selected scope so a filtered subset cannot hide starts or boundaries. Older normalized exports lacking source-field/provider metadata should be rebuilt from their preserved raw case evidence.
 
 ## Limits and development
 
