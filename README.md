@@ -1,6 +1,6 @@
 # CrumbTrail
 
-Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.2.0 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory through the local Velociraptor engine. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
+Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.2.1 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory through the local Velociraptor engine. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
 
 The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Runtime Python dependencies: standard library only, Python 3.11 or newer. Velociraptor is optional for `demo`, `import`, `analyze`, `sessions`, and `verify`; it is required for `lab` and `local`.
 
@@ -55,6 +55,8 @@ crumbtrail local --root D:\Cases\example --client-id C.0123456789abcdef `
 
 Expected filenames are `Security.evtx`, `System.evtx`, `Microsoft-Windows-Sysmon%4Operational.evtx`, `Microsoft-Windows-PowerShell%4Operational.evtx`, and `Microsoft-Windows-Windows Defender%4Operational.evtx`. Missing files remain coverage gaps. A log directory is mandatory; the CLI never silently falls back to current-host logs. The parser reads only selected IDs in the case window, not every event. The selected IDs are `1`, `3`, `11`, `15`, `104`, `1102`, `1116`, `1117`, `4104`, `4624`, `4625`, `4688`, `4697`, `4698`, and `7045`; interpretation also checks the channel.
 
+The [bounded EVTX lab runner](docs/evtx-lab.md) compares this actual native path with Windows `Get-WinEvent -Path` using separate private copies. System selected-event and subsecond-window checks pass. A pinned Security corpus agrees on all 181 selected identities/providers/logon fields, but eight timestamps fail the strict one-microsecond comparison gate (maximum difference 1.3 microseconds). This upstream precision limit remains open; W2 acceptance is partial. No public EVTX data or private event records are bundled.
+
 The two artifact YAML files are packaged under `src/crumbtrail/data`. They may be installed in an existing Velociraptor deployment using its normal artifact management, then the full unnamed source can be exported for `import`. **Version 0.2 has no remote API client, artifact installer, server provisioning, remote scheduling, pagination, or collection resume command.** Do not treat a local lab pass as validation of a server deployment. [Velociraptor server API documentation](https://docs.velociraptor.app/docs/server_automation/server_api/)
 
 ## Logon-session views
@@ -92,6 +94,10 @@ Each case contains:
 | `collection/run-*/` | Native execution request/stdout/stderr diagnostics, when applicable |
 
 Every retained raw event reference includes the original artifact hash and its one-based row number in the parsed result sequence. Duplicate events share one timeline event while retaining all references. Event IDs include the case and endpoint identities. Timestamp offsets normalize to UTC; timestamps without a timezone are rejected. Events outside the inclusive case window remain in raw evidence and are counted as excluded from the timeline.
+
+Version 0.2.1 prefers `System.TimeCreated.SystemTime` over a formatted top-level `TimeCreated`, which some native artifacts truncate to whole seconds. Native numeric Unix seconds and ISO timestamps are supported. The exact imported value remains in `timestamp_original`, and its field path in `timestamp_source`, on both the event and every reference; raw JSON bytes retain the original representation. Normalized UTC uses Python's microsecond resolution. The native artifact now filters fractional source time before its row limit. Reanalyzing older raw results can change derived event/finding IDs and case-window inclusion; regenerate derived exports together. Events previously omitted by native filtering require a new parse of the retained EVTX source.
+
+Velociraptor 0.77.3 converts EVTX FILETIME to floating-point Unix seconds upstream, so exact 100-nanosecond EVTX precision cannot be recovered from that field. No fabricated digits or broad timestamp tolerance is applied to the timeline. See the [measured precision limits and pinned upstream source](docs/evtx-lab.md#precision-and-upstream-limits), especially for very tight case boundaries or apparent timestamp ties.
 
 Version 0.2 includes a supplied nonempty provider in derived event identity so otherwise identical trusted/unrecognized provider records cannot merge. Rebuilding an older case may therefore change derived event and finding IDs for records that contain a provider. Providerless fixture identities and original raw hashes remain unchanged; regenerate derived exports together.
 

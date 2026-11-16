@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/Velocidex/velociraptor",
+  "tag": "v0.77.3",
+  "revision": "7d287b0b988b35657e1b401f7b2ffebaf60dbcae",
+  "repository_license": "GNU Affero General Public License version 3",
+  "license_url": "https://github.com/Velocidex/velociraptor/blob/7d287b0b988b35657e1b401f7b2ffebaf60dbcae/LICENSE",
+  "data_bundled": false,
+  "provenance_limit": "Repository license is not evidence of fixture collection history or consent to publish identifying records. Keep downloaded data and reader results private.",
+  "files": [
+    {
+      "channel": "System",
+      "path": "artifacts/testdata/files/DE_104_system_log_cleared.evtx",
+      "url": "https://raw.githubusercontent.com/Velocidex/velociraptor/7d287b0b988b35657e1b401f7b2ffebaf60dbcae/artifacts/testdata/files/DE_104_system_log_cleared.evtx",
+      "bytes": 69632,
+      "sha256": "5579cdca073ee4864ea82d656aa2d25400b5c1e85b8e688db5d85f6dc558c2af",
+      "git_blob_sha1": "841ebfb29eff04b680893e6fc85e91afd510c108",
+      "local_origin_limit": "The existing supplied export has identical bytes; how that local copy was originally obtained is unknown."
+    },
+    {
+      "channel": "Security",
+      "path": "artifacts/testdata/files/RDPAuth_Security.evtx",
+      "url": "https://raw.githubusercontent.com/Velocidex/velociraptor/7d287b0b988b35657e1b401f7b2ffebaf60dbcae/artifacts/testdata/files/RDPAuth_Security.evtx",
+      "bytes": 1187840,
+      "sha256": "e8aedecca631f5d69691d9c67b25f68947805ad37df13863567ca28778f6ddde",
+      "git_blob_sha1": "179ace062cfe67928365c77c0388c6b41eb3133c"
+    }
+  ]
+}

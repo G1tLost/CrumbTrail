@@ -1,6 +1,6 @@
 """Windows-only interpretation; adapted from the MIT BEC event rules."""
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import PureWindowsPath
 
 from .storage import CaseError, LOGS, digest, encode, iso, records, row_type, timestamp
@@ -18,6 +18,22 @@ def logon_id(value):
         return str(number) if number > 0 else ""
     except ValueError:
         return ""
+
+
+def event_time(row, system):
+    """Prefer the native event time over the artifact's formatted display time."""
+    created = system.get("TimeCreated")
+    native = created.get("SystemTime") if isinstance(created, dict) else created
+    value = native if native is not None else row.get("TimeCreated")
+    source = "System.TimeCreated.SystemTime" if native is not None and isinstance(created, dict) else "System.TimeCreated" if native is not None else "TimeCreated"
+    if type(value) in (int, float):
+        try:
+            parsed = datetime.fromtimestamp(value, timezone.utc)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise CaseError("Invalid native event Unix timestamp.") from exc
+    else:
+        parsed = timestamp(value)
+    return value, iso(parsed), source
 
 
 def normalize(case, row, bound, simulation):
@@ -44,9 +60,7 @@ def normalize(case, row, bound, simulation):
         data = data["LogFileCleared"]
     if not isinstance(data, dict):
         raise CaseError("Windows event data must be an object.")
-    created = system.get("TimeCreated") or {}
-    at = row.get("TimeCreated") or (created.get("SystemTime") if isinstance(created, dict) else created)
-    utc = iso(timestamp(at))
+    at, utc, time_source = event_time(row, system)
     image = str(data.get("Image") or data.get("NewProcessName") or "")
     command = str(data.get("CommandLine") or data.get("ProcessCommandLine") or "")
     target = str(data.get("TargetFilename") or data.get("ImagePath") or data.get("Path") or image or data.get("TaskName") or "")
@@ -87,6 +101,7 @@ def normalize(case, row, bound, simulation):
                         for field in ("LogonId", "TargetLogonId", "SubjectLogonId") if field in data]
     return dict(event_id="EVT-" + digest(encode(identity))[:24], timestamp_utc=utc,
                 timestamp_original=at, client_id=bound["client_id"], org_id=bound["org_id"],
+                timestamp_source=time_source,
                 hostname=host, channel=channel, event_code=code, record_id=record_id,
                 provider=provider,
                 kind=kind, label=label, account=account.casefold(), image=image, command_line=command,
@@ -167,7 +182,8 @@ def analyze(case):
                 continue
             target = unique.setdefault(event["event_id"], event)
             target["references"].append(dict(artifact=entry["path"], sha256=entry["sha256"], row=index,
-                                             source_log=row.get("OSPath"), provenance=provenance))
+                                             source_log=row.get("OSPath"), provenance=provenance,
+                                             timestamp_source=event["timestamp_source"], timestamp_original=event["timestamp_original"]))
         for channel in LOGS:
             row = coverage.get(channel)
             reason = None

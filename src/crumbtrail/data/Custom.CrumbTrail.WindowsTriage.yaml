@@ -23,8 +23,12 @@ sources:
       ''')
       LET Rows <= SELECT * FROM foreach(row=Logs, query={
           SELECT * FROM Artifact.Windows.EventLogs.Evtx(
-              EvtxGlob=expand(path=LogDirectory + "/" + File), StartDate=StartDate, EndDate=EndDate,
+              EvtxGlob=expand(path=LogDirectory + "/" + File),
               IDRegex="^(1|3|11|15|104|1102|1116|1117|4104|4624|4625|4688|4697|4698|7045)$")
+              // The upstream artifact filters a whole-second TimeCreated.
+              // Apply this case's window to the native fractional value instead.
+              WHERE timestamp(epoch=System.TimeCreated.SystemTime) >= timestamp(string=StartDate)
+                AND timestamp(epoch=System.TimeCreated.SystemTime) <= timestamp(string=EndDate)
               LIMIT 20000
       })
       LET LogSpecs <= SELECT Channel AS LogChannel, File FROM Logs

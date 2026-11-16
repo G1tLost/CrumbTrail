@@ -90,6 +90,44 @@ class CrumbTrailTests(unittest.TestCase):
         with self.assertRaisesRegex(CaseError, "timezone"):
             self.preserve(rows)
 
+    def test_native_fractional_time_takes_precedence_over_formatted_seconds(self):
+        rows = [copy.deepcopy(self.rows[0])]
+        rows[0]["TimeCreated"] = "2026-10-30T20:27:00Z"
+        # Native VQL uses Unix seconds for SystemTime; its top-level display can lose fractions.
+        from datetime import datetime
+        precise = datetime.fromisoformat("2026-10-30T20:27:00.894341+00:00").timestamp()
+        rows[0]["System"]["TimeCreated"] = {"SystemTime": precise}
+        self.preserve(rows)
+        event = analyze(self.case)["events"][0]
+        self.assertEqual(event["timestamp_utc"], "2026-10-30T20:27:00.894341Z")
+        self.assertEqual(event["timestamp_original"], precise)
+        self.assertEqual(event["timestamp_source"], "System.TimeCreated.SystemTime")
+        self.assertEqual(event["references"][0]["timestamp_original"], precise)
+
+    def test_native_iso_time_keeps_fraction_and_invalid_native_time_cannot_fall_back(self):
+        rows = [copy.deepcopy(self.rows[0])]
+        rows[0]["System"]["TimeCreated"] = {"SystemTime": "2026-10-30T20:27:00.1234567Z"}
+        self.preserve(rows)
+        event = analyze(self.case)["events"][0]
+        self.assertEqual(event["timestamp_utc"], "2026-10-30T20:27:00.123456Z")
+        self.assertEqual(event["timestamp_original"], "2026-10-30T20:27:00.1234567Z")
+        rows[0]["System"]["TimeCreated"]["SystemTime"] = "invalid"
+        with self.assertRaisesRegex(CaseError, "timestamp"):
+            self.preserve(rows)
+
+    def test_fractional_case_window_uses_authoritative_native_time(self):
+        self.case.meta.update(start="2026-10-30T20:27:00.800000Z", end="2026-10-30T20:27:00.950000Z")
+        save(self.case.root / "case.json", self.case.meta)
+        inside = copy.deepcopy(self.rows[0])
+        inside["System"]["TimeCreated"] = {"SystemTime": "2026-10-30T20:27:00.8943413Z"}
+        outside = copy.deepcopy(inside)
+        outside["System"]["TimeCreated"]["SystemTime"] = "2026-10-30T20:27:00.9900000Z"
+        self.preserve([inside, outside])
+        result = analyze(self.case)
+        self.assertEqual(result["summary"]["events"], 1)
+        self.assertEqual(result["summary"]["excluded_outside_window"], 1)
+        self.assertEqual(result["events"][0]["timestamp_utc"], "2026-10-30T20:27:00.894341Z")
+
     def test_missing_coverage_and_row_limit_visible(self):
         rows = [row for row in self.rows if row.get("CrumbTrailRowType") != "coverage"]
         self.preserve(rows)
