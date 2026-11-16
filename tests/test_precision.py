@@ -207,9 +207,13 @@ class PrecisionTests(unittest.TestCase):
     def test_source_growth_exceeds_hash_budget_before_native_invocation(self):
         case = self.case()
         log_dir = self.folder / "logs"; log_dir.mkdir()
-        source = log_dir / "Security.evtx"; source.write_bytes(b"a" * 32)
+        # Exercise an alias spelling on every platform, like Windows short TMP paths.
+        source = log_dir / ".." / "logs" / "Security.evtx"; source.write_bytes(b"a" * 32)
+        resolved_source = source.resolve()
+        self.assertNotEqual(source, resolved_source)
         executable = self.folder / "inert.exe"; executable.write_bytes(b"inert")
         original_open = Path.open
+        injected_readers = []
         class GrowingReader:
             def __init__(self, stream): self.stream, self.grown = stream, False
             def __enter__(self): return self
@@ -222,12 +226,19 @@ class PrecisionTests(unittest.TestCase):
                 return self.stream.read(size)
         def opening(path, mode="r", *args, **kwargs):
             stream = original_open(path, mode, *args, **kwargs)
-            return GrowingReader(stream) if path == source and mode == "rb" else stream
+            if mode == "rb" and path.resolve() == resolved_source:
+                reader = GrowingReader(stream)
+                injected_readers.append(reader)
+                return reader
+            return stream
         with patch("crumbtrail.precision.MAX_BYTES", 64), patch("crumbtrail.precision.require_parser"), \
              patch.object(Path, "open", opening), patch("crumbtrail.native.subprocess.run") as native:
             with self.assertRaisesRegex(CaseError, "byte budget"):
                 run_local(case, CLIENT, executable, log_directory=log_dir)
             native.assert_not_called()
+        self.assertEqual(len(injected_readers), 1)
+        self.assertTrue(injected_readers[0].grown)
+        self.assertEqual(source.stat().st_size, 96)
         self.assertFalse((case.root / "collection").exists())
 
     def test_nonregular_evtx_input_rejected_before_native_invocation(self):
