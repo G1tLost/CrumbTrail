@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crumbtrail-ir"
+version = "0.1.0"
+description = "Independent Windows event triage with preserved evidence and an offline timeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "CrumbTrail contributors"}]
+dependencies = []
+
+[project.scripts]
+crumbtrail = "crumbtrail.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+crumbtrail = ["data/*.jsonl", "data/*.yaml"]

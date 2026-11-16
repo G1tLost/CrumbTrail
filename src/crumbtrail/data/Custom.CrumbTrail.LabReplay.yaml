@@ -1,0 +1,11 @@
+name: Custom.CrumbTrail.LabReplay
+description: |
+  Read the CrumbTrail inert JSONL lab evidence through the Velociraptor VQL engine.
+  Every returned event is synthetic. The fixture contains telemetry only.
+type: CLIENT
+parameters:
+  - name: FixtureFile
+    description: Absolute path to CrumbTrail's Windows ransomware JSONL fixture.
+sources:
+  - query: |
+      SELECT * FROM parse_jsonl(filename=FixtureFile)

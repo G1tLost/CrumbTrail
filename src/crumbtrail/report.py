@@ -1,0 +1,47 @@
+"""Portable, escaped offline HTML plus JSON and spreadsheet-safe CSV."""
+import csv
+from html import escape
+
+from .storage import save
+
+
+def csv_cell(value):
+    text = "" if value is None else str(value)
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
+
+
+def write_report(case, result):
+    save(case.root / "timeline.json", result)
+    fields = ["event_id", "timestamp_utc", "hostname", "channel", "event_code", "kind", "label", "account", "image", "command_line", "target", "simulation"]
+    with (case.root / "timeline.csv").open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(fields)
+        writer.writerows([csv_cell(event.get(field)) for field in fields] for event in result["events"])
+    esc = lambda value: escape(str(value), quote=True)
+    findings = "".join("<li><strong>" + esc(f["title"]) + "</strong> — " + esc(f["interpretation"]) +
+                       "<br><small>" + esc(f["rule"]) + ": " + ", ".join('<a href="#' + esc(eid) + '">' + esc(eid) + "</a>" for eid in f["event_ids"]) + "</small></li>" for f in result["findings"])
+    gaps = "".join("<li>" + esc(gap.get("client_id", "")) + " " + esc(gap["reason"]) + "</li>" for gap in result["gaps"])
+    rows = []
+    for event in result["events"]:
+        refs = " ".join('<a href="' + esc(ref["artifact"]) + '">raw ' + esc(ref["sha256"][:12]) + " row " + str(ref["row"]) + "</a>" for ref in event["references"])
+        rows.append('<tr id="' + esc(event["event_id"]) + '"><td>' + esc(event["timestamp_utc"]) + "</td><td>" + esc(event["hostname"]) +
+                    "</td><td>" + esc(event["label"]) + (" <b>[SYNTHETIC]</b>" if event["simulation"] else "") +
+                    "<details><summary>Details and original evidence</summary><p>" + esc(event["channel"]) + " / " + esc(event["event_code"]) +
+                    "</p><pre>" + esc(event["command_line"] or event["target"]) + "</pre><p>" + refs + "</p></details></td></tr>")
+    summary = result["summary"]
+    page = '''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>CrumbTrail case report</title><style>
+body{font:16px system-ui,sans-serif;line-height:1.55;margin:2rem auto;max-width:1100px;padding:0 1rem;color:#15273b;background:#f5f7fa}
+h1,h2{color:#163a54}a{color:#075985}table{width:100%;border-collapse:collapse;background:white}td,th{padding:.7rem;text-align:left;vertical-align:top;border-bottom:1px solid #cbd5e1}pre{white-space:pre-wrap;overflow-wrap:anywhere}small{overflow-wrap:anywhere}li{margin:.6rem 0}.table{overflow-x:auto}b{color:#9a3412}@media print{body{background:white}details{display:block}a{color:inherit}}
+</style></head><body><h1>CrumbTrail</h1>'''
+    page += "<p>Case <strong>" + esc(case.meta["case_id"]) + "</strong> · " + esc(case.meta["start"]) + " to " + esc(case.meta["end"]) + "</p>"
+    page += "<p>" + esc(summary["events"]) + " events · " + esc(summary["findings"]) + " findings · " + esc(summary["gaps"]) + " coverage gaps</p>"
+    page += "<p>Findings describe telemetry associations, not proof of encryption or compromise. Original raw bytes remain linked below. The local manifest is unsigned.</p>"
+    page += '<p><a href="timeline.json">JSON evidence timeline</a> · <a href="timeline.csv">CSV timeline</a> · <a href="manifest.json">SHA-256 manifest</a></p>'
+    page += "<h2>Coverage</h2><ul>" + (gaps or "<li>No reported gaps in the supplied selected-channel coverage.</li>") + "</ul>"
+    page += "<p>Excluded outside the case window: " + esc(summary["excluded_outside_window"]) + "; deduplicated rows: " + esc(summary["duplicate_rows"]) + ".</p>"
+    page += "<h2>Findings</h2><ul>" + (findings or "<li>No configured rule matched; this is not a clean-host verdict.</li>") + "</ul>"
+    page += '<h2>Timeline (UTC)</h2><div class="table"><table><thead><tr><th>UTC</th><th>Endpoint</th><th>Observation</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div></body></html>"
+    (case.root / "report.html").write_text(page, encoding="utf-8")

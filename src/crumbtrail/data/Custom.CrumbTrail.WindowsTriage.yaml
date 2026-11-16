@@ -1,0 +1,36 @@
+name: Custom.CrumbTrail.WindowsTriage
+description: |
+  CrumbTrail selected Windows triage event-log collection.
+  Returns native parsed Windows events and per-log collection coverage.
+  Reads selected event IDs in an explicit UTC window.
+type: CLIENT
+precondition: SELECT OS FROM info() WHERE OS = "windows"
+parameters:
+  - name: StartDate
+    type: timestamp
+  - name: EndDate
+    type: timestamp
+  - name: LogDirectory
+    default: '%SystemRoot%\System32\winevt\Logs'
+sources:
+  - query: |
+      LET Logs = SELECT * FROM parse_csv(accessor="data", filename='''Channel,File
+      Security,Security.evtx
+      System,System.evtx
+      Microsoft-Windows-Sysmon/Operational,Microsoft-Windows-Sysmon%4Operational.evtx
+      Microsoft-Windows-PowerShell/Operational,Microsoft-Windows-PowerShell%4Operational.evtx
+      Microsoft-Windows-Windows Defender/Operational,Microsoft-Windows-Windows Defender%4Operational.evtx
+      ''')
+      LET Rows <= SELECT * FROM foreach(row=Logs, query={
+          SELECT * FROM Artifact.Windows.EventLogs.Evtx(
+              EvtxGlob=expand(path=LogDirectory + "/" + File), StartDate=StartDate, EndDate=EndDate,
+              IDRegex="^(1|3|11|15|104|1102|1116|1117|4104|4624|4625|4688|4697|4698|7045)$")
+              LIMIT 20000
+      })
+      LET LogSpecs <= SELECT Channel AS LogChannel, File FROM Logs
+      LET Coverage <= SELECT "coverage" AS CrumbTrailRowType, LogChannel,
+          len(list=array(_={ SELECT OSPath FROM glob(globs=expand(path=LogDirectory + "/" + File)) })) AS Files,
+          len(list=array(_={ SELECT * FROM Rows WHERE Channel = LogChannel })) AS Events FROM LogSpecs
+      SELECT * FROM chain(
+          events={ SELECT *, "event" AS CrumbTrailRowType FROM Rows },
+          coverage={ SELECT *, Events >= 20000 AS AtLimit FROM Coverage })

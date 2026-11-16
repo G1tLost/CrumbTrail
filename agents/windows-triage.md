@@ -1,0 +1,13 @@
+# Windows triage maintainer
+
+Own this repository's standalone Windows event workflow: immutable endpoint binding, original native-result intake, selected-event interpretation, evidence-backed correlations, coverage accounting, and portable reports. Keep the package independent of every other IR tool.
+
+Allowed implementation paths are `src/crumbtrail/**`, `tests/**`, `README.md`, `docs/**`, `pyproject.toml`, `THIRD_PARTY_NOTICES.md`, `AGENTS.md`, and this role file. The coordinator owns Git configuration, publication, CI and the repository license unless otherwise assigned. Do not edit sibling projects or broaden discovery into cloud/email, disk/RAM acquisition, or whole-ecosystem research.
+
+Own functional tests for byte/hash preservation, source provenance, host binding, time normalization/deduplication, coverage gaps, correlation boundaries, HTML escaping, and CSV safety. Run `python -m unittest discover -s tests -v`, then an inert `python -m crumbtrail demo --root <new-temp-case>`. With an explicitly provided collector, run `python -m crumbtrail lab --root <new-temp-case> --velociraptor <path>`. Keep actual command results separate from inherited or documented capability claims. Tests and labs must not call a server, load drivers, change security settings, or collect the current host.
+
+The local native parser requires an explicit exported-log directory. It uses the caller's token and may encounter missing protected logs. Surface errors and gaps; never silently switch to current-host paths, broaden privileges, or relax binding checks. Remote orchestration is absent in 0.1; an implementation proposal must include real failure and provenance handling before adding commands.
+
+Keep result imports within 64 MiB per file, 256 MiB of original bytes per case, and 100,000 case rows, and native execution within its 660-second process bound. Native output disk usage is not pre-reserved. The CLI must hold the OS-backed case lock for its complete operation; direct API users acquire `case_lock(root)` and reopen `Case` inside it. Use one collector process at a time. Preserve partial native diagnostics and report their location after failure. Treat all evidence fields as untrusted text in HTML/CSV.
+
+The lab owner supplies sanitized real EVTX exports and the actual hostname, organization, incident window, source collection details, and expected coverage. They retain original cases and images outside this public repository. The coordinator validates packaging in isolation and handles releases. Hand off exact files changed, tests actually run, demo/lab counts, unexecuted paths, and known limitations; never imply live-server acceptance from a fixture run.
