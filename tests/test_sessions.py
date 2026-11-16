@@ -67,6 +67,20 @@ class SessionViewTests(unittest.TestCase):
                              {session["scope"]["client_id"]})
             self.assertEqual({members[eid]["logon_ids"][0] for eid in session["event_ids"]}, {session["logon_id"]})
 
+    def test_100ns_ordering_and_logoff_cutoff_do_not_collapse_to_microseconds(self):
+        start = self.start(1, 1, "0x42")
+        before = self.event(2, 1, {"LogonId": "0x42"})
+        boundary = self.boundary(3, 1, 4634)
+        after = self.event(4, 1, {"LogonId": "0x42"})
+        for event, digit in zip((start, before, boundary, after), (1, 2, 3, 4)):
+            event["timestamp_utc"] = f"2026-10-30T20:01:00.123456{digit}Z"
+        result = build_session_view([after, boundary, before, start])
+        self.assertEqual([item["event_id"] for item in result["events"]], [item["event_id"] for item in (start, before, boundary, after)])
+        membership = {item["event_id"]: item for item in result["events"]}
+        self.assertEqual(membership[before["event_id"]]["status"], "linked")
+        self.assertEqual(membership[after["event_id"]]["status"], "unlinked")
+        self.assertEqual(result["sessions"][0]["end_utc"], "2026-10-30T20:01:00.1234563Z")
+
     def test_repeated_start_does_not_assign_nearest_session(self):
         first, later = self.start(1, 1, "0x42"), self.start(3, 30, "0x42")
         between = self.event(2, 2, {"LogonId": "0x42"})

@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 LOGS = (
@@ -77,6 +77,46 @@ def iso(value):
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+TICKS_PER_SECOND = 10_000_000
+FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+
+
+def ticks(value):
+    """Parse ISO UTC/offset time without discarding a seventh fractional digit."""
+    if isinstance(value, str):
+        minute = re.fullmatch(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})(Z|[+-]\d{2}:?\d{2})", value)
+        if minute:
+            value = minute.group(1) + ":00" + minute.group(2)
+    if isinstance(value, str) and re.search(r"[+-]\d{2}:?\d{2}(?::?\d{2})?[.,]\d+$", value):
+        raise CaseError("Fractional timezone offsets are unsupported for exact timestamps.")
+    if isinstance(value, str) and not re.fullmatch(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2}(?::?\d{2})?)", value):
+        # Let timestamp() retain its specific invalid/naive-time diagnostics.
+        timestamp(value)
+        raise CaseError("Exact timestamp parsing requires a calendar date and explicit hour:minute:second.")
+    parsed = timestamp(value)
+    fraction = re.search(r"[T ]\d{2}:\d{2}:\d{2}[.,](\d+)", value)
+    digits = fraction.group(1) if fraction else ""
+    if len(digits) > 7 and digits[7:].strip("0"):
+        raise CaseError("Timestamp exceeds supported 100-nanosecond precision.")
+    delta = parsed - FILETIME_EPOCH
+    return ((delta.days * 86400 + delta.seconds) * TICKS_PER_SECOND + delta.microseconds * 10
+            + int((digits + "0000000")[6]))
+
+
+def iso_ticks(value):
+    """Format integer FILETIME units exactly, preserving legacy whole/microsecond forms."""
+    if type(value) is not int:
+        raise CaseError("Exact timestamp ticks must be an integer.")
+    microseconds, remainder = divmod(value, 10)
+    try:
+        parsed = FILETIME_EPOCH + timedelta(microseconds=microseconds)
+    except OverflowError as exc:
+        raise CaseError("Exact timestamp is outside the supported datetime range.") from exc
+    if remainder:
+        return parsed.strftime("%Y-%m-%dT%H:%M:%S") + f".{parsed.microsecond:06d}{remainder}Z"
+    return iso(parsed)
+
+
 def now():
     return iso(datetime.now(timezone.utc))
 
@@ -131,12 +171,12 @@ class Case:
         self.meta = read(self.root / "case.json")
         if self.meta.get("schema") != 1 or self.meta.get("tool") != "CrumbTrail":
             raise CaseError("Unsupported case schema.")
-        if timestamp(self.meta["start"]) > timestamp(self.meta["end"]):
+        if ticks(self.meta["start"]) > ticks(self.meta["end"]):
             raise CaseError("Invalid case time window.")
 
     @classmethod
     def create(cls, root, start, end, case_id=None):
-        first, last = timestamp(start), timestamp(end)
+        first, last = ticks(start), ticks(end)
         if first > last:
             raise CaseError("Case start must not follow its end.")
         root = Path(root).resolve()
@@ -145,7 +185,7 @@ class Case:
             if any(path.name != ".crumbtrail.lock" for path in root.iterdir()):
                 raise CaseError("Create a case in a new or empty directory.")
             save(root / "case.json", dict(schema=1, tool="CrumbTrail", case_id=case_id or "CT-" + uuid.uuid4().hex[:12],
-                 start=iso(first), end=iso(last), created_at=now(), endpoints={}))
+                 start=iso_ticks(first), end=iso_ticks(last), created_at=now(), endpoints={}))
             save(root / "manifest.json", dict(schema=1, artifacts=[]))
             return cls(root)
 
@@ -176,14 +216,25 @@ class Case:
             raise CaseError("Unsupported evidence manifest.")
         return value
 
-    def preserve(self, raw, client_id, source, simulation=False, details=None):
+    def preserve(self, raw, client_id, source, simulation=False, details=None, precision=None):
         from .events import normalize
+        from .precision import validate_precision
 
         self.verify()
         bound = self.binding(client_id)
         rows = records(raw)
+        exact_rows = validate_precision(precision, rows, digest(raw)) if precision is not None else {}
+        precision_raw = encode(precision) if precision is not None else None
+        details = dict(details or {})
+        if "precision" in details:
+            raise CaseError("Supply exact-time evidence through the precision argument, not details.")
+        if precision_raw is not None:
+            if len(precision_raw) > MAX_BYTES:
+                raise CaseError("Exact-time sidecar exceeds 64 MiB.")
+            precision_sha = digest(precision_raw)
+            details["precision"] = dict(path="precision/" + precision_sha + ".json", sha256=precision_sha, bytes=len(precision_raw))
         coverage_channels = set()
-        for row in rows:
+        for index, row in enumerate(rows, 1):
             if row_type(row) == "coverage":
                 if row.get("LogChannel") not in LOGS or any(type(row.get(k)) is not int or row[k] < 0 for k in ("Files", "Events")) or type(row.get("AtLimit")) is not bool:
                     raise CaseError("Invalid coverage channel or counts.")
@@ -191,10 +242,10 @@ class Case:
                     raise CaseError("Duplicate coverage row for one channel; import one complete source per file.")
                 coverage_channels.add(row["LogChannel"])
             elif row_type(row) == "event":
-                normalize(self, row, bound, bool(simulation))
+                normalize(self, row, bound, bool(simulation), exact=exact_rows.get(index))
             else:
                 raise CaseError("Unrecognized result row type.")
-        provenance = dict(**bound, simulation=bool(simulation), source=source, details=details or {})
+        provenance = dict(**bound, simulation=bool(simulation), source=source, details=details)
         sha = digest(raw)
         manifest = self.manifest()
         existing = next((entry for entry in manifest["artifacts"] if entry["sha256"] == sha), None)
@@ -204,7 +255,7 @@ class Case:
             return existing
         if len(rows) + sum(entry["rows"] for entry in manifest["artifacts"]) > MAX_ROWS:
             raise CaseError("Case row budget would exceed 100,000; use a narrower case window.")
-        if len(raw) + sum(entry["bytes"] for entry in manifest["artifacts"]) > MAX_CASE_BYTES:
+        if len(raw) + len(precision_raw or b"") + sum(entry["bytes"] + entry["provenance"].get("details", {}).get("precision", {}).get("bytes", 0) for entry in manifest["artifacts"]) > MAX_CASE_BYTES:
             raise CaseError("Case original-result budget would exceed 256 MiB.")
         relative = "raw/" + sha + ".json"
         path = self.root / relative
@@ -216,6 +267,15 @@ class Case:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
+        if precision_raw is not None:
+            exact_path = self.root / details["precision"]["path"]
+            if not exact_path.resolve().is_relative_to(self.root) or exact_path.is_symlink():
+                raise CaseError("Exact-time evidence destination escapes the case.")
+            exact_path.parent.mkdir(exist_ok=True)
+            with exact_path.open("xb") as stream:
+                stream.write(precision_raw)
+                stream.flush()
+                os.fsync(stream.fileno())
         entry = dict(path=relative, sha256=sha, bytes=len(raw), rows=len(rows), provenance=provenance,
                      provenance_sha256=digest(encode(provenance)), imported_at=now())
         manifest["artifacts"].append(entry)
@@ -223,7 +283,8 @@ class Case:
         return entry
 
     def verify(self):
-        manifest, registered = self.manifest(), set()
+        from .precision import load_precision
+        manifest, registered, registered_precision = self.manifest(), set(), set()
         for entry in manifest["artifacts"]:
             sha = entry.get("sha256", "")
             if not re.fullmatch(r"[a-f0-9]{64}", sha) or entry.get("path") != "raw/" + sha + ".json":
@@ -244,7 +305,16 @@ class Case:
                 raise CaseError("Evidence provenance differs from the endpoint binding.")
             if len(records(path.read_bytes())) != entry["rows"]:
                 raise CaseError("Raw evidence row count differs from the manifest.")
+            descriptor = provenance.get("details", {}).get("precision")
+            if descriptor:
+                if descriptor["path"] in registered_precision:
+                    raise CaseError("Duplicate exact-time evidence entry.")
+                registered_precision.add(descriptor["path"])
+                load_precision(self, entry)
         actual = {p.relative_to(self.root).as_posix() for p in (self.root / "raw").glob("**/*") if p.is_file()}
         if actual != registered:
             raise CaseError("Unregistered raw evidence exists; inspect the interrupted write before proceeding.")
+        actual_precision = {p.relative_to(self.root).as_posix() for p in (self.root / "precision").glob("**/*") if p.is_file()}
+        if actual_precision != registered_precision:
+            raise CaseError("Unregistered exact-time evidence exists; inspect the interrupted write before proceeding.")
         return len(registered)

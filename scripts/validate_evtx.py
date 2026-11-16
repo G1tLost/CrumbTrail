@@ -88,7 +88,7 @@ def compare_records(expected, actual):
                 raise ValueError("Duplicate source identities require a separate investigation; comparison is not collapsed.")
             mapping[identity] = row
     mismatches, deltas = [], []
-    exact_microseconds = 0
+    exact_microseconds = exact_100ns = 0
     for identity in sorted(wanted.keys() | observed.keys()):
         first, second = wanted.get(identity), observed.get(identity)
         if first is None or second is None:
@@ -101,6 +101,7 @@ def compare_records(expected, actual):
         expected_ns, actual_ns = utc_nanoseconds(first["timestamp_source"]), utc_nanoseconds(second["timestamp_utc"])
         delta = actual_ns - expected_ns
         deltas.append(delta)
+        exact_100ns += delta == 0
         exact_microseconds += expected_ns // 1000 == actual_ns // 1000
         if abs(delta) > 1000:
             mismatches.append({"identity": identity, "reason": "timestamp", "delta_nanoseconds": delta})
@@ -111,6 +112,7 @@ def compare_records(expected, actual):
                 row_facts_passed=len(mismatches) == precision_failures,
                 timestamp_precision_passed=not precision_failures, timestamp_mismatch_count=precision_failures,
                 mismatches=mismatches, exact_at_microsecond_count=exact_microseconds,
+                exact_at_100ns_count=exact_100ns,
                 maximum_absolute_timestamp_delta_ns=max(map(abs, deltas), default=0),
                 timestamp_bound_ns=1000,
                 source_logon_id_rows=sum(bool(fields_oracle(row)) for row in expected))
@@ -175,26 +177,30 @@ def validate(args):
     hosts = {row["hostname"] for row in records}
     if len(hosts) != 1 or {row["channel"] for row in records} != {args.channel}:
         raise ValueError("Use a single-host, single-channel exported file for this bounded runner.")
-    start = utc(args.start) if args.start else min(utc(row["timestamp_source"]) for row in records) - timedelta(seconds=1)
-    end = utc(args.end) if args.end else max(utc(row["timestamp_source"]) for row in records) + timedelta(seconds=1)
-    if start > end:
+    start = args.start or iso(min(utc(row["timestamp_source"]) for row in records) - timedelta(seconds=1))
+    end = args.end or iso(max(utc(row["timestamp_source"]) for row in records) + timedelta(seconds=1))
+    start_ns, end_ns = utc_nanoseconds(start), utc_nanoseconds(end)
+    if start_ns > end_ns:
         raise ValueError("The selected window is reversed.")
-    start_ns, end_ns = utc_nanoseconds(iso(start)), utc_nanoseconds(iso(end))
     expected = [row for row in records if row["event_code"] in SELECTED_IDS
                 and start_ns <= utc_nanoseconds(row["timestamp_source"]) <= end_ns]
     case = output / "case"
     for label, command in (
-        ("create", cli_command("create", "--root", case, "--case-id", "CT-EVTX-LAB", "--start", iso(start), "--end", iso(end))),
+        ("create", cli_command("create", "--root", case, "--case-id", "CT-EVTX-LAB", "--start", start, "--end", end)),
         ("bind", cli_command("bind", "--root", case, "--client-id", CLIENT, "--hostname", next(iter(hosts)))),
     ):
         if run_command(command, output, label, 30)[0]:
             raise ValueError("Case setup failed; inspect private diagnostics.")
     native_code, native_elapsed = run_command(cli_command("local", "--root", case, "--client-id", CLIENT,
-        "--velociraptor", args.velociraptor.resolve(), "--log-directory", input_dir), output, "local", 700)
+        "--velociraptor", args.velociraptor.resolve(), "--log-directory", input_dir), output, "local", 850)
     if native_code not in (0, 2) or not (case / "timeline.json").is_file():
         raise ValueError("The actual local EVTX command failed; inspect private local diagnostics.")
     timeline = json.loads((case / "timeline.json").read_text(encoding="utf-8"))
     comparison = compare_records(expected, timeline["events"])
+    event_times = [utc_nanoseconds(event["timestamp_utc"]) for event in timeline["events"]]
+    comparison["timeline_order_exact"] = event_times == sorted(event_times)
+    comparison["exact_provenance_complete"] = all(event.get("timestamp_precision") == "evtx-systemtime-100ns" and
+        all(reference.get("exact_time") for reference in event["references"]) for event in timeline["events"])
     expected_gaps = sorted(channel + " coverage unavailable." for channel in LOG_FILES if channel != args.channel)
     actual_gaps = sorted(gap["reason"] for gap in timeline["gaps"])
     comparison["coverage_matches"] = actual_gaps == expected_gaps
@@ -204,14 +210,14 @@ def validate(args):
     write_json(output / "comparison.private.json", comparison)
     write_json(output / "provenance.private.json", dict(source_path=str(source), copied_path=str(copied),
         source_sha256=source_hash, source_reference=args.source_reference, acquisition_history="operator-supplied; not inferred",
-        channel=args.channel, start=iso(start), end=iso(end), selected_ids=SELECTED_IDS,
+        channel=args.channel, start=start, end=end, selected_ids=SELECTED_IDS,
         oracle_copy_sha256_before=source_hash, oracle_copy_sha256_after=oracle_hash_after,
         oracle_copy_bytes_after=oracle_input.stat().st_size, collector_input_sha256_after=sha256(copied),
         executable_sha256=sha256(args.velociraptor.resolve()), python_version=sys.version,
         os_version=oracle["os_version"], oracle_reader=oracle["reader"]))
     manifest = json.loads((case / "manifest.json").read_text(encoding="utf-8"))
     passed = not comparison["mismatch_count"] and all(comparison[field] for field in
-        ("coverage_matches", "original_input_unchanged", "evidence_verified"))
+        ("coverage_matches", "original_input_unchanged", "evidence_verified", "exact_provenance_complete", "timeline_order_exact"))
     summary = dict(schema=1, passed=passed, channel=args.channel, source_sha256=source_hash,
         input_bytes=source.stat().st_size, oracle_records=len(records), selected_rows=len(expected),
         selected_event_id_counts=dict(sorted(Counter(str(row["event_code"]) for row in expected).items())),
@@ -220,6 +226,12 @@ def validate(args):
         timestamp_precision_passed=comparison["timestamp_precision_passed"],
         timestamp_mismatch_count=comparison["timestamp_mismatch_count"],
         exact_at_microsecond_count=comparison["exact_at_microsecond_count"],
+        exact_at_100ns_count=comparison["exact_at_100ns_count"], exact_provenance_complete=comparison["exact_provenance_complete"],
+        timeline_order_exact=comparison["timeline_order_exact"],
+        header_time_disagreements=sum(ref["exact_time"]["record_header_filetime"] != ref["exact_time"]["filetime_ticks"]
+            for event in timeline["events"] for ref in event["references"]),
+        header_id_disagreements=sum(ref["exact_time"]["record_header_id"] != str(event["record_id"])
+            for event in timeline["events"] for ref in event["references"]),
         maximum_absolute_timestamp_delta_ns=comparison["maximum_absolute_timestamp_delta_ns"],
         timestamp_bound_ns=1000, source_logon_id_rows=comparison["source_logon_id_rows"],
         coverage_gap_count=len(actual_gaps), coverage_matches=comparison["coverage_matches"],
@@ -232,6 +244,7 @@ def validate(args):
         oracle_peak_working_set_bytes=oracle["reader_peak_working_set_bytes"],
         collector_peak_working_set_bytes=None,
         raw_result_bytes=sum(entry["bytes"] for entry in manifest["artifacts"]),
+        precision_sidecar_bytes=sum(entry["provenance"]["details"]["precision"]["bytes"] for entry in manifest["artifacts"]),
         derived_output_bytes=sum((case / name).stat().st_size for name in ("timeline.json", "sessions.json", "timeline.csv", "report.html")))
     write_json(output / "summary.aggregate.json", summary)
     print(json.dumps(summary, indent=2))

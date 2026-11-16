@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import PureWindowsPath
 
-from .storage import CaseError, LOGS, digest, encode, iso, records, row_type, timestamp
+from .storage import CaseError, LOGS, digest, encode, iso, records, row_type, timestamp, ticks, iso_ticks, TICKS_PER_SECOND
 
 
 def guid(value):
@@ -32,11 +32,11 @@ def event_time(row, system):
         except (ValueError, OverflowError, OSError) as exc:
             raise CaseError("Invalid native event Unix timestamp.") from exc
     else:
-        parsed = timestamp(value)
+        return value, iso_ticks(ticks(value)), source
     return value, iso(parsed), source
 
 
-def normalize(case, row, bound, simulation):
+def normalize(case, row, bound, simulation, exact=None):
     system = row.get("System") or {}
     if not isinstance(system, dict):
         raise CaseError("Windows System must be an object.")
@@ -61,6 +61,8 @@ def normalize(case, row, bound, simulation):
     if not isinstance(data, dict):
         raise CaseError("Windows event data must be an object.")
     at, utc, time_source = event_time(row, system)
+    if exact is not None:
+        utc = iso_ticks(int(exact["filetime_ticks"]))
     image = str(data.get("Image") or data.get("NewProcessName") or "")
     command = str(data.get("CommandLine") or data.get("ProcessCommandLine") or "")
     target = str(data.get("TargetFilename") or data.get("ImagePath") or data.get("Path") or image or data.get("TaskName") or "")
@@ -102,6 +104,7 @@ def normalize(case, row, bound, simulation):
     return dict(event_id="EVT-" + digest(encode(identity))[:24], timestamp_utc=utc,
                 timestamp_original=at, client_id=bound["client_id"], org_id=bound["org_id"],
                 timestamp_source=time_source,
+                timestamp_precision="evtx-systemtime-100ns" if exact is not None else "native-float-microsecond" if type(at) in (int, float) else "iso-supplied",
                 hostname=host, channel=channel, event_code=code, record_id=record_id,
                 provider=provider,
                 kind=kind, label=label, account=account.casefold(), image=image, command_line=command,
@@ -125,7 +128,7 @@ def correlate(events):
             event["finding_ids"].append(finding_id)
 
     for event in events:
-        at = timestamp(event["timestamp_utc"])
+        at = ticks(event["timestamp_utc"])
         host = (event["org_id"], event["client_id"], event["simulation"])
         key = (*host, event["process_guid"])
         if event["kind"] == "logon.success" and event["logon_id"]:
@@ -133,23 +136,23 @@ def correlate(events):
         if event["kind"] in ("process", "recovery") and event["process_guid"]:
             processes[key] = event
             login = logons.get((*host, event["logon_id"]))
-            if login and timedelta(0) < at - timestamp(login["timestamp_utc"]) <= timedelta(minutes=30):
+            if login and 0 < at - ticks(login["timestamp_utc"]) <= 1800 * TICKS_PER_SECOND:
                 emit("logon-process", "Logon followed by process execution", [login, event],
                      "The same endpoint and logon ID occur within 30 minutes; this is contextual association.")
         if event["kind"] == "recovery":
             parent = processes.get((*host, event["parent_process_guid"]))
-            chain = [parent, event] if parent and timedelta(0) < at - timestamp(parent["timestamp_utc"]) <= timedelta(minutes=30) else [event]
+            chain = [parent, event] if parent and 0 < at - ticks(parent["timestamp_utc"]) <= 1800 * TICKS_PER_SECOND else [event]
             emit("recovery-suppression", "Recovery suppression command observed", chain,
                  "Command-line telemetry records an attempt. Verify its effect; this does not prove recovery data was changed.", True)
         if event["kind"] == "file" and event["process_guid"]:
             recent = files.setdefault(key, [])
-            recent[:] = [item for item in recent if at - timestamp(item["timestamp_utc"]) <= timedelta(minutes=2)]
+            recent[:] = [item for item in recent if at - ticks(item["timestamp_utc"]) <= 120 * TICKS_PER_SECOND]
             recent.append(event)
             paths = {item["target"].casefold() for item in recent}
             note = any(re.search(r"readme.*recover|how.*recover|ransom.*note", path, re.I) for path in paths)
             if note and len(paths) >= 6 and key not in bursts:
                 parent = processes.get(key)
-                chain = ([parent] if parent and timedelta(0) <= at - timestamp(parent["timestamp_utc"]) <= timedelta(minutes=30) else []) + recent
+                chain = ([parent] if parent and 0 <= at - ticks(parent["timestamp_utc"]) <= 1800 * TICKS_PER_SECOND else []) + recent
                 emit("file-burst", "Rapid file creation with a recovery-note filename", chain,
                      "At least six distinct paths share one process within two minutes. File contents must be examined to establish encryption.", True)
                 bursts.add(key)
@@ -158,6 +161,7 @@ def correlate(events):
 
 def analyze(case):
     from .sessions import build_session_view
+    from .precision import load_precision
 
     case.verify()
     unique, gaps, raw_events, excluded = {}, [], 0, 0
@@ -168,22 +172,26 @@ def analyze(case):
     for entry in sorted(manifest["artifacts"], key=lambda e: e["sha256"]):
         provenance = entry["provenance"]
         bound = case.binding(provenance["client_id"])
+        exact_rows = load_precision(case, entry)
         sources.add(bound["client_id"])
         coverage, counts = {}, {}
         for index, row in enumerate(records((case.root / entry["path"]).read_bytes()), 1):
             if row_type(row) == "coverage":
                 coverage[row["LogChannel"]] = row
                 continue
-            event = normalize(case, row, bound, provenance["simulation"])
+            exact = exact_rows.get(index)
+            event = normalize(case, row, bound, provenance["simulation"], exact=exact)
             raw_events += 1
             counts[event["channel"]] = counts.get(event["channel"], 0) + 1
-            if not timestamp(case.meta["start"]) <= timestamp(event["timestamp_utc"]) <= timestamp(case.meta["end"]):
+            if not ticks(case.meta["start"]) <= ticks(event["timestamp_utc"]) <= ticks(case.meta["end"]):
                 excluded += 1
                 continue
             target = unique.setdefault(event["event_id"], event)
             target["references"].append(dict(artifact=entry["path"], sha256=entry["sha256"], row=index,
                                              source_log=row.get("OSPath"), provenance=provenance,
                                              timestamp_source=event["timestamp_source"], timestamp_original=event["timestamp_original"]))
+            if exact is not None:
+                target["references"][-1]["exact_time"] = exact
         for channel in LOGS:
             row = coverage.get(channel)
             reason = None
@@ -199,7 +207,7 @@ def analyze(case):
         if client_id not in sources:
             gaps.append(dict(client_id=client_id, reason="No result source imported for this endpoint."))
     # ISO strings can have differing fractional precision; use actual UTC time.
-    events = sorted(unique.values(), key=lambda e: (timestamp(e["timestamp_utc"]), e["event_id"]))
+    events = sorted(unique.values(), key=lambda e: (ticks(e["timestamp_utc"]), e["event_id"]))
     findings = correlate(events)
     return dict(schema=1, tool="CrumbTrail", case=case.meta, events=events, findings=findings, gaps=gaps,
                 session_view=build_session_view(events),

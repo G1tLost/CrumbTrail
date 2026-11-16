@@ -1,8 +1,8 @@
 # CrumbTrail
 
-Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.2.1 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory through the local Velociraptor engine. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
+Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.3.0 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory with exact source timestamps. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
 
-The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Runtime Python dependencies: standard library only, Python 3.11 or newer. Velociraptor is optional for `demo`, `import`, `analyze`, `sessions`, and `verify`; it is required for `lab` and `local`.
+The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Python 3.11 or newer is required. The base offline workflow uses only the standard library. `local` additionally requires the optional `evtx` extra, pinned to `python-evtx==0.8.1`; no parser dependency is required to verify or analyze a completed case. Velociraptor is required for `lab` and `local`.
 
 ## Install and try
 
@@ -46,16 +46,19 @@ crumbtrail import --root D:\Cases\example --client-id C.0123456789abcdef `
 
 Import accepts UTF-8 JSON arrays or JSONL from the bundled `Custom.CrumbTrail.WindowsTriage` artifact, including its coverage rows. The original legacy `BECRowType` marker is accepted for compatible older exports; new artifacts use `CrumbTrailRowType`. Add `--simulation` only for synthetic exports. `import` does not directly accept binary EVTX, ZIP collectors, arbitrary vendor JSON, disk images, or RAM dumps.
 
-For exported EVTX files, use local native parsing:
+For exported EVTX files, install the exact-parser extra from this checkout, then use local native parsing:
 
 ```powershell
+python -m pip install ".[evtx]"
 crumbtrail local --root D:\Cases\example --client-id C.0123456789abcdef `
   --velociraptor C:\IRTools\velociraptor.exe --log-directory D:\Exports\Logs
 ```
 
-Expected filenames are `Security.evtx`, `System.evtx`, `Microsoft-Windows-Sysmon%4Operational.evtx`, `Microsoft-Windows-PowerShell%4Operational.evtx`, and `Microsoft-Windows-Windows Defender%4Operational.evtx`. Missing files remain coverage gaps. A log directory is mandatory; the CLI never silently falls back to current-host logs. The parser reads only selected IDs in the case window, not every event. The selected IDs are `1`, `3`, `11`, `15`, `104`, `1102`, `1116`, `1117`, `4104`, `4624`, `4625`, `4688`, `4697`, `4698`, and `7045`; interpretation also checks the channel.
+Expected filenames are `Security.evtx`, `System.evtx`, `Microsoft-Windows-Sysmon%4Operational.evtx`, `Microsoft-Windows-PowerShell%4Operational.evtx`, and `Microsoft-Windows-Windows Defender%4Operational.evtx`. Missing files remain coverage gaps. A log directory is mandatory; the CLI never silently falls back to current-host logs. Native results retain selected IDs from a slightly expanded candidate window; final timeline inclusion uses exact integer source time against the inclusive case window. The selected IDs are `1`, `3`, `11`, `15`, `104`, `1102`, `1116`, `1117`, `4104`, `4624`, `4625`, `4688`, `4697`, `4698`, and `7045`; interpretation also checks the channel.
 
-The [bounded EVTX lab runner](docs/evtx-lab.md) compares this actual native path with Windows `Get-WinEvent -Path` using separate private copies. System selected-event and subsecond-window checks pass. A pinned Security corpus agrees on all 181 selected identities/providers/logon fields, but eight timestamps fail the strict one-microsecond comparison gate (maximum difference 1.3 microseconds). This upstream precision limit remains open; W2 acceptance is partial. No public EVTX data or private event records are bundled.
+The [bounded EVTX lab runner](docs/evtx-lab.md) compares this actual native path with independent Windows `Get-WinEvent -Path` using separate private copies. System and all 181 selected Security events now agree exactly at 100 ns resolution: **maximum timestamp difference 0 ns**, with the existing 1,000 ns acceptance gate unchanged. Real single-tick inclusive and adjacent exclusion tests pass. The wider W2 channel/OS/responder matrix remains open; no public EVTX data or private event records are bundled.
+
+Exact local parsing reads the BinXML `Event/System/TimeCreated/@SystemTime` FILETIME substitution and binds its bytes to the source hash, record/field offsets, XML identity and original native result row. It does not substitute record-header time or Windows-oracle results. Ambiguous/missing matches, changed sources, unsupported parser versions and malformed nonzero chunks fail the operation. See [exact-time design and compatibility](docs/exact-time.md).
 
 The two artifact YAML files are packaged under `src/crumbtrail/data`. They may be installed in an existing Velociraptor deployment using its normal artifact management, then the full unnamed source can be exported for `import`. **Version 0.2 has no remote API client, artifact installer, server provisioning, remote scheduling, pagination, or collection resume command.** Do not treat a local lab pass as validation of a server deployment. [Velociraptor server API documentation](https://docs.velociraptor.app/docs/server_automation/server_api/)
 
@@ -86,6 +89,7 @@ Each case contains:
 | --- | --- |
 | `case.json` | Case ID, explicit incident window, immutable endpoint bindings |
 | `raw/<sha256>.json` | Exact original imported bytes, including duplicates and out-of-window rows |
+| `precision/<sha256>.json` | Verified native EVTX timestamp sidecar: exact FILETIME bytes, source/record hashes, byte offsets and raw-row bindings |
 | `manifest.json` | Original hash, byte/row count, source, endpoint/organization, simulation flag, and provenance checksum |
 | `timeline.json` | Normalized events, per-row raw references, findings, coverage gaps, and counts |
 | `sessions.json` | Observed starts, explicit boundaries, source-ID membership, unbounded groups, and unlinked/ambiguous events with raw references |
@@ -95,9 +99,9 @@ Each case contains:
 
 Every retained raw event reference includes the original artifact hash and its one-based row number in the parsed result sequence. Duplicate events share one timeline event while retaining all references. Event IDs include the case and endpoint identities. Timestamp offsets normalize to UTC; timestamps without a timezone are rejected. Events outside the inclusive case window remain in raw evidence and are counted as excluded from the timeline.
 
-Version 0.2.1 prefers `System.TimeCreated.SystemTime` over a formatted top-level `TimeCreated`, which some native artifacts truncate to whole seconds. Native numeric Unix seconds and ISO timestamps are supported. The exact imported value remains in `timestamp_original`, and its field path in `timestamp_source`, on both the event and every reference; raw JSON bytes retain the original representation. Normalized UTC uses Python's microsecond resolution. The native artifact now filters fractional source time before its row limit. Reanalyzing older raw results can change derived event/finding IDs and case-window inclusion; regenerate derived exports together. Events previously omitted by native filtering require a new parse of the retained EVTX source.
+`System.TimeCreated.SystemTime` takes precedence over formatted top-level `TimeCreated`. The original imported value remains in `timestamp_original`, its field path in `timestamp_source`, and raw JSON bytes remain unchanged. Native exact cases add `timestamp_precision="evtx-systemtime-100ns"` and `references[].exact_time`; `timestamp_utc` is derived from the proven source bytes using integer arithmetic. Case-window selection, timeline ordering, correlations and session boundaries retain seven fractional digits when supplied. This is representation precision, not a guarantee of clock accuracy or causality.
 
-Velociraptor 0.77.3 converts EVTX FILETIME to floating-point Unix seconds upstream, so exact 100-nanosecond EVTX precision cannot be recovered from that field. No fabricated digits or broad timestamp tolerance is applied to the timeline. See the [measured precision limits and pinned upstream source](docs/evtx-lab.md#precision-and-upstream-limits), especially for very tight case boundaries or apparent timestamp ties.
+Older JSON-only imports with numeric times retain their existing microsecond conversion and are labeled `native-float-microsecond`; lost source digits cannot be reconstructed without the EVTX. ISO imports preserve their supplied digits through 100 ns and are labeled `iso-supplied`; shorter fractions do not gain invented precision. Fractional timezone offsets and nonzero precision finer than 100 ns are rejected. Rebuild derived exports together after upgrading; accurate reparsing of an older local case requires its original EVTX and a new native run, not an oracle-time substitution.
 
 Version 0.2 includes a supplied nonempty provider in derived event identity so otherwise identical trusted/unrecognized provider records cannot merge. Rebuilding an older case may therefore change derived event and finding IDs for records that contain a provider. Providerless fixture identities and original raw hashes remain unchanged; regenerate derived exports together.
 
@@ -108,7 +112,7 @@ crumbtrail verify --root D:\Cases\example
 crumbtrail analyze --root D:\Cases\example
 ```
 
-`verify` checks registered raw hashes, sizes, rows, provenance checksums, and endpoint binding. It detects unregistered raw files rather than discarding them. The manifest and checksums are local and unsigned; someone who rewrites the entire case can rewrite them. Keep a separately controlled evidence copy/hash anchor under your procedure. Native diagnostic files are operational logs; only the imported raw result bytes are registered evidence. Derived JSON/CSV/HTML can be regenerated after verification.
+`verify` checks registered raw and precision-sidecar hashes, sizes, rows, source/identity bindings, provenance checksums and endpoint binding. Missing, changed or unregistered sidecars stop verification. It never opens source paths recorded in an imported case, so a Windows case remains verifiable offline on another platform without the EVTX extra. Original EVTX files remain separately controlled evidence; the sidecar preserves their hashes and exact field bytes, not full EVTX copies. The manifest/checksums are unsigned and can be rewritten by someone controlling the whole case. Native diagnostics remain operational logs. Derived JSON/CSV/HTML can be regenerated after verification.
 
 Rules correlate only within an endpoint, organization, and simulation status. A shared logon ID within 30 minutes gives context; a recovery-related command records an attempt; six distinct paths within two minutes plus a recovery-note-like filename creates a suspicious observation. None establishes that encryption occurred or that an account was compromised. Missing coverage, row-limit hits, and count mismatches are visible gaps. Absence of a finding is not a clean-host verdict.
 
@@ -134,12 +138,12 @@ with case_lock("D:/Cases/example"):
 
 ## Limits and development
 
-Imports are bounded to 64 MiB per result file, 256 MiB of original result bytes per case, and 100,000 rows per case. Native queries use a 655-second VQL timeout and a 660-second subprocess timeout, with 20,000 selected rows per channel. Native stdout streams to the case disk; the 64 MiB import check runs after the process exits and is not a hard disk quota. Allocate collection storage explicitly. There is no resumable large-result import in this version.
+Imports are bounded to 64 MiB per result/sidecar, 256 MiB of combined registered bytes per case, and 100,000 result rows per case. Exact local inputs are regular files without file reparse aliases: at most 64 MiB each, 256 MiB combined, five files and 100,000 physical records combined. Hashing checks byte bounds and file identity during reads. The exact parser runs in a separate process with a 120-second timeout. Native VQL retains its 655-second query/660-second process limits and 20,000 candidate rows per channel. Candidate overread can hit caps or cost more work; unchanged large-file throughput is not claimed. Native stdout streams to disk; the later 64 MiB check is not a hard disk quota. There is no resumable large-result import.
 
 CrumbTrail provides event triage, not full filesystem or memory forensics. It does not acquire disks/RAM, extract credentials, alter protection settings, run ransomware, or contain email/cloud correlation. Original source attribution and MIT terms are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The fixture and event rules were selectively adapted; no legacy runtime package is required.
 
 ```powershell
-python -m pip install -e .
+python -m pip install -e ".[evtx]"
 python -m unittest discover -s tests -v
 ```
 

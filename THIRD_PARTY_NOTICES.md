@@ -1,5 +1,7 @@
 # Third-party notices
 
+The optional `evtx` extra installs `python-evtx==0.8.1`, an independent Apache-2.0 Python package by Willi Ballenthin and contributors. CrumbTrail uses its BinXML APIs; no parser source is vendored or relicensed here. Its dependency metadata includes `hexdump`. See the [primary repository](https://github.com/williballenthin/python-evtx) and [Apache license](https://github.com/williballenthin/python-evtx/blob/4d8ba92d934d8c08975ecb325124d480249312a6/LICENSE.TXT). The exact adapter verifies the installed parser version before reading EVTX; future upgrades need independent source-field and oracle validation.
+
 The optional external EVTX validation corpus is listed in `docs/evtx-corpus.json` and is **not bundled or relicensed** by this repository. The pinned Velocidex/velociraptor source repository declares GNU AGPL version 3 in its root LICENSE. Fixture-specific collection history and consent are not established by that license. Validation retains downloaded data and all identifying records privately; public documentation contains aggregate results and source hashes only. Consult the pinned license and source before any redistribution.
 
 The Windows JSONL fixture, Velociraptor artifact definitions, and event-interpretation/correlation logic were adapted from Bacon Egg and Cheese (BEC) 0.5.0. No BEC runtime or cloud-provider modules are included. Original license:

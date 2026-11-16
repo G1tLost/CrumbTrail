@@ -1,7 +1,7 @@
 """Conservative, source-ID-backed views of observed Windows logon sessions."""
 from bisect import bisect_left, bisect_right
 
-from .storage import digest, encode, timestamp
+from .storage import digest, encode, ticks as timestamp
 
 
 LIMITATIONS = [

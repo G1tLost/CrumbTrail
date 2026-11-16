@@ -1,12 +1,13 @@
 # Validation and lab acceptance
 
-CrumbTrail 0.2.1 has a standalone test suite, source-ID-backed logon-session views, and bounded real-EVTX comparison against the native Windows file reader. W2 is partial: System checks pass; Security identity/field checks pass while eight timestamps fail a strict one-microsecond gate. The old BEC suite is not a test result for this package. No ransomware, current-host log collection, server deployment, kernel driver, RAM acquisition, or physical-disk imaging is part of this acceptance procedure.
+CrumbTrail 0.3.0 has a standalone test suite, source-ID-backed logon-session views, and exact EVTX SystemTime recovery independently compared with the native Windows reader. All eight previous Security timestamp failures are closed: System and all 181 selected Security events now agree with **0 ns difference**, keeping the 1,000 ns gate unchanged. W2 remains partial because the broader channel/OS/responder matrix is open. No ransomware, current-host log collection, server deployment, kernel driver, RAM acquisition or physical-disk imaging is part of this acceptance procedure.
 
 ## Automated and inert checks
 
 Run from an installed checkout using a new directory for each case:
 
 ```powershell
+python -m pip install ".[evtx]"
 python -m unittest discover -s tests -v
 python -m crumbtrail demo --root C:\IRLab\crumbtrail-demo
 python -m crumbtrail verify --root C:\IRLab\crumbtrail-demo
@@ -42,7 +43,30 @@ For lab review, use a private existing export with an independently known succes
 
 Native fixture acceptance validates the engine invocation and JSON result pipeline. It does not validate real EVTX parsing on every Windows/Sysmon version, server scheduling, sensor readiness, completeness of source retention, detection accuracy, or fleet-scale throughput. Follow the [bounded real-EVTX runbook](evtx-lab.md) for the independent reader comparison and its explicit remaining gates.
 
-## Version 0.2.1 real-EVTX execution record
+## Version 0.3.0 exact-time execution record
+
+Executed using the installed editable standalone package, pinned `python-evtx==0.8.1`, Python 3.14.7 and the approved Velociraptor 0.77.3 runtime. Exact input hashes/origin limits and Windows reader details remain in the [lab runbook](evtx-lab.md); [exact-time.md](exact-time.md) documents the actual field, API source, byte/row provenance, bounds and compatibility.
+
+| Check | Actual result |
+| --- | --- |
+| Real System EVTX | 1/1 selected identity and exact timestamp, maximum delta 0 ns; independent reader agrees despite different record-header time and record-header ID |
+| Real Security EVTX | 181/181 selected events from 789 native-reader records; all identities/providers/logon fields and timestamps agree, maximum delta 0 ns; all eight former precision failures closed |
+| Actual 100 ns inclusive boundaries | A single-tick window exactly at the System event returns 1/1; the immediately preceding and following tick windows each return 0/0. Candidate native bytes and sidecars remain preserved |
+| Integrity, ordering and coverage | Source and collector copies unchanged; full raw/sidecar verification, per-row exact provenance and integer timeline order pass; four expected missing channels, native CLI exit 2 and acceptance runner exit 0 |
+| Automated regressions | 76 tests passed, covering exact source-field selection, header disagreement, sidecar tamper/loss/ambiguity, portable Windows-path verification without external reads, parser-version mismatch, malformed nonzero chunks/trailers, growing/nonregular input bounds, seven-digit windows/session cutoffs and legacy whole-minute timestamps |
+| Installed smoke | Passed outside checkout, including base-compatible numeric fractional imports and a supplied seven-digit inclusive single-tick window |
+| Inert native JSONL replay | Expected 21 events, four findings, one duplicate, zero gaps and one verified original result; no optional exact sidecar is fabricated for synthetic JSON |
+| Open gates | Wider real channels and supported logoff/startup boundary EVTX, Windows/export/parser version matrix, complete resource/stress testing and responder review |
+
+Version 0.3.0 adds a pinned optional dependency and persisted exact-time sidecars while leaving base JSON import/report/verification independent of the extra. The original float-only 0.2.1 measurements below remain historical evidence, not a current failing gate. Final clean-wheel/CI evidence is recorded separately by the release coordinator.
+
+### Independent fresh-wheel validation
+
+The release coordinator built the final 0.3.0 wheel and installed it into a new Windows Python 3.14.7 environment. The base installed smoke passed before adding optional dependencies. After installing that wheel's `evtx` extra, all **76 tests passed** under Python isolated mode. Import checks resolved CrumbTrail from that environment's `site-packages`; neither sibling tool was installed.
+
+The coordinator independently repeated the actual native acceptance runner against that installed wheel and the pinned original inputs. The single-tick System window returned 1/1 events; Security returned 181/181 selected events from 789 Windows-reader records. Both runs passed every gate with **0 ns maximum timestamp difference**, complete exact-source references, exact ordering, verified raw/sidecar evidence and unchanged original/collector inputs. The gate remained 1,000 ns. Both local invocations returned the expected exit 2 for four absent channels, while both acceptance runners returned 0. Windows changed only its disposable Security oracle copy. These checks do not close the broader W2 matrix above.
+
+## Version 0.2.1 real-EVTX execution record (historical)
 
 Executed 2026-11-16 using the installed editable standalone package, Python 3.14.7 and the approved Velociraptor 0.77.3 Windows runtime. The [EVTX runbook](evtx-lab.md) records exact versions/hashes, pinned primary-maintainer sources/license, aggregate resource measurements, selection rules and copy handling. No EVTX records or identifying host/source paths are published.
 

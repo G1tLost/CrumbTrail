@@ -52,6 +52,18 @@ with tempfile.TemporaryDirectory(prefix='crumbtrail-installed-') as folder:
     assert event['timestamp_original'] == precise
     assert event['references'][0]['timestamp_source'] == 'System.TimeCreated.SystemTime'
     assert run(folder, 'verify', '--root', str(fraction))['verified_artifacts'] == 1
+    # Seven supplied ISO digits remain exact without installing the EVTX extra.
+    instant = '2026-10-30T20:27:00.1234567Z'
+    rows[0]['System']['TimeCreated']['SystemTime'] = instant
+    source.write_text(json.dumps(rows), encoding='utf-8')
+    tick_case = Path(folder) / 'hundred-nanoseconds'
+    run(folder, 'create', '--root', str(tick_case), '--start', instant, '--end', instant)
+    run(folder, 'bind', '--root', str(tick_case), '--client-id', 'C.0123456789abcdef', '--hostname', 'LAB-WIN01')
+    result = run(folder, 'import', '--root', str(tick_case), '--client-id', 'C.0123456789abcdef',
+                 '--file', str(source), '--simulation')
+    assert result['events'] == 1
+    exact = json.loads((tick_case / 'timeline.json').read_text(encoding='utf-8'))
+    assert exact['events'][0]['timestamp_utc'] == exact['case']['start'] == exact['case']['end'] == instant
     print('Installed CrumbTrail: 21 Windows events, four findings, no gaps; one session, three ID-linked '
-          'and 18 explicitly unlinked events; fractional native time and window checked; '
+          'and 18 explicitly unlinked events; fractional native time and inclusive 100ns window checked; '
           'source references and raw evidence verified outside checkout.')

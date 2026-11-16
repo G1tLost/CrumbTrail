@@ -109,7 +109,7 @@ class CrumbTrailTests(unittest.TestCase):
         rows[0]["System"]["TimeCreated"] = {"SystemTime": "2026-10-30T20:27:00.1234567Z"}
         self.preserve(rows)
         event = analyze(self.case)["events"][0]
-        self.assertEqual(event["timestamp_utc"], "2026-10-30T20:27:00.123456Z")
+        self.assertEqual(event["timestamp_utc"], "2026-10-30T20:27:00.1234567Z")
         self.assertEqual(event["timestamp_original"], "2026-10-30T20:27:00.1234567Z")
         rows[0]["System"]["TimeCreated"]["SystemTime"] = "invalid"
         with self.assertRaisesRegex(CaseError, "timestamp"):
@@ -126,7 +126,7 @@ class CrumbTrailTests(unittest.TestCase):
         result = analyze(self.case)
         self.assertEqual(result["summary"]["events"], 1)
         self.assertEqual(result["summary"]["excluded_outside_window"], 1)
-        self.assertEqual(result["events"][0]["timestamp_utc"], "2026-10-30T20:27:00.894341Z")
+        self.assertEqual(result["events"][0]["timestamp_utc"], "2026-10-30T20:27:00.8943413Z")
 
     def test_missing_coverage_and_row_limit_visible(self):
         rows = [row for row in self.rows if row.get("CrumbTrailRowType") != "coverage"]
