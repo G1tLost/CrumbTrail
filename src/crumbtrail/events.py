@@ -115,8 +115,17 @@ def normalize(case, row, bound, simulation, exact=None):
                 sha256=sha, simulation=simulation, references=[], finding_ids=[])
 
 
-def correlate(events):
-    findings, processes, logons, files, bursts = [], {}, {}, {}, set()
+def correlate(events, session_view=None):
+    # Use the same full-scope boundary/ambiguity policy as the report. Never
+    # choose a nearest start independently of the source-ID session view.
+    from .sessions import build_session_view
+    session_view = build_session_view(events) if session_view is None else session_view
+    by_id = {event["event_id"]: event for event in events}
+    starts = {session["session_id"]: by_id[session["start_event_id"]]
+              for session in session_view["sessions"]}
+    linked_starts = {member["event_id"]: starts[member["session_id"]]
+                     for member in session_view["events"] if member["status"] == "linked"}
+    findings, processes, files, bursts = [], {}, {}, set()
 
     def emit(rule, title, chain, interpretation, suspicious=False):
         ids = [event["event_id"] for event in chain]
@@ -127,15 +136,13 @@ def correlate(events):
         for event in chain:
             event["finding_ids"].append(finding_id)
 
-    for event in events:
+    for event in sorted(events, key=lambda item: (ticks(item["timestamp_utc"]), item["event_id"])):
         at = ticks(event["timestamp_utc"])
         host = (event["org_id"], event["client_id"], event["simulation"])
         key = (*host, event["process_guid"])
-        if event["kind"] == "logon.success" and event["logon_id"]:
-            logons[(*host, event["logon_id"])] = event
         if event["kind"] in ("process", "recovery") and event["process_guid"]:
             processes[key] = event
-            login = logons.get((*host, event["logon_id"]))
+            login = linked_starts.get(event["event_id"])
             if login and 0 < at - ticks(login["timestamp_utc"]) <= 1800 * TICKS_PER_SECOND:
                 emit("logon-process", "Logon followed by process execution", [login, event],
                      "The same endpoint and logon ID occur within 30 minutes; this is contextual association.")
@@ -208,9 +215,10 @@ def analyze(case):
             gaps.append(dict(client_id=client_id, reason="No result source imported for this endpoint."))
     # ISO strings can have differing fractional precision; use actual UTC time.
     events = sorted(unique.values(), key=lambda e: (ticks(e["timestamp_utc"]), e["event_id"]))
-    findings = correlate(events)
+    session_view = build_session_view(events)
+    findings = correlate(events, session_view)
     return dict(schema=1, tool="CrumbTrail", case=case.meta, events=events, findings=findings, gaps=gaps,
-                session_view=build_session_view(events),
+                session_view=session_view,
                 summary=dict(events=len(events), findings=len(findings), gaps=len(gaps), artifacts=len(manifest["artifacts"]),
                              raw_event_rows=raw_events, excluded_outside_window=excluded,
                              duplicate_rows=raw_events - excluded - len(events)))
