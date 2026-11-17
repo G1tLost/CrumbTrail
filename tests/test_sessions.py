@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from crumbtrail.cli import main
-from crumbtrail.events import analyze, normalize
+from crumbtrail.events import analyze, correlate, normalize
 from crumbtrail.report import write_report
 from crumbtrail.sessions import build_session_view
 from crumbtrail.storage import Case, case_lock, encode
@@ -50,6 +50,56 @@ class SessionViewTests(unittest.TestCase):
         event = normalize(self.case, row, self.case.binding(host), False)
         event["references"] = [{"artifact": "raw/boundary.json", "sha256": "boundary", "row": record}]
         return event
+
+    def process(self, record, minute, **fields):
+        return self.event(record, minute, {
+            "Image": r"C:\Windows\example.exe",
+            "ProcessGuid": "11111111-1111-1111-1111-111111111111", **fields})
+
+    def logon_findings(self, events):
+        return [finding for finding in correlate(events) if finding["rule"] == "logon-process"]
+
+    def test_correlation_respects_logoff_and_startup_and_new_start(self):
+        for code in (4634, 4608):
+            with self.subTest(code=code):
+                start = self.start(1, 1, "0x42")
+                before = self.process(2, 2, LogonId="0x42")
+                cutoff = self.boundary(3, 3, code)
+                after = self.process(4, 4, LogonId="0x42")
+                restart = self.start(5, 5, "0x42")
+                renewed = self.process(6, 6, LogonId="0x42")
+                events = [renewed, after, cutoff, start, restart, before]
+                self.assertEqual([f["event_ids"] for f in self.logon_findings(events)],
+                                 [[start["event_id"], before["event_id"]],
+                                  [restart["event_id"], renewed["event_id"]]])
+
+    def test_correlation_suppresses_repeated_starts_and_conflicting_roles(self):
+        first, second = self.start(1, 1, "0x42"), self.start(3, 3, "0x42")
+        process = self.process(2, 2, LogonId="0x42")
+        self.assertEqual(self.logon_findings([first, process, second]), [])
+        conflict = self.process(4, 4, SubjectLogonId="0x42", TargetLogonId="0x43")
+        self.assertEqual(self.logon_findings([first, conflict]), [])
+
+    def test_correlation_uses_start_target_not_subject_or_generic_id(self):
+        start = self.start(1, 1, "0x42", SubjectLogonId="0x43", LogonId="0x44")
+        correct = self.process(2, 2, LogonId="0x42")
+        subject = self.process(3, 3, LogonId="0x43")
+        generic = self.process(4, 4, LogonId="0x44")
+        self.assertEqual([f["event_ids"] for f in self.logon_findings([start, correct, subject, generic])],
+                         [[start["event_id"], correct["event_id"]]])
+
+    def test_correlation_rejects_untrusted_start_provider(self):
+        start = self.start(1, 1, "0x42")
+        start["provider"] = "Untrusted-Provider"
+        self.assertEqual(self.logon_findings([start, self.process(2, 2, LogonId="0x42")]), [])
+
+    def test_correlation_keeps_30_minute_window_and_boundary_ties(self):
+        start = self.start(1, 1, "0x42")
+        at_limit = self.process(2, 31, LogonId="0x42")
+        outside = self.process(3, 32, LogonId="0x42")
+        self.assertEqual(len(self.logon_findings([start, at_limit, outside])), 1)
+        cutoff = self.boundary(4, 31, 4634)
+        self.assertEqual(self.logon_findings([start, at_limit, cutoff]), [])
 
     def test_two_sessions_on_each_of_two_hosts_reuse_ids_without_cross_linking(self):
         events = []
