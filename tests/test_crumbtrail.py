@@ -31,6 +31,14 @@ class CrumbTrailTests(unittest.TestCase):
         raw = self.raw if rows is None else b"\n".join(encode(row) for row in rows) + b"\n"
         return self.case.preserve(raw, client, "test-export", simulation, {"filename": "windows.jsonl"})
 
+    def test_packaged_artifact_requires_explicit_export_directory(self):
+        # Static contract only: a real VQL precondition run is a separate gate.
+        artifact = data_path("Custom.CrumbTrail.WindowsTriage.yaml").read_text()
+        self.assertIn("default: ''", artifact)
+        self.assertIn("AND LogDirectory =~ '[^[:space:]]'", artifact)
+        self.assertNotIn("%SystemRoot%", artifact)
+        self.assertNotIn("System32", artifact)
+
     def test_original_bytes_and_manifest_hash_are_preserved(self):
         raw = self.raw.replace(b"\n", b"\r\n")
         entry = self.case.preserve(raw, LAB_CLIENT, "test-export", True)
