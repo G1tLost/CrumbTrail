@@ -6,6 +6,30 @@ Independent Windows event triage with original-byte preservation, a UTC timeline
 
 The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Python 3.11 or newer is required. The base offline workflow uses only the standard library. `local` additionally requires the optional `evtx` extra, pinned to `python-evtx==0.8.1`; no parser dependency is required to verify or analyze a completed case. Velociraptor is required for `lab` and `local`.
 
+## Permissions and access
+
+CrumbTrail does not authenticate to Microsoft Graph, Exchange Online, Google Workspace/GAM or Active Directory. It needs no OAuth scopes, application consent, tenant roles, domain credentials or Domain Admin membership for its implemented workflows. A bound client ID, organization and hostname are provenance labels, not authentication.
+
+| Operation | Required local access | External access/execution |
+| --- | --- | --- |
+| `create`, `demo` | Create/write permission in a new or empty case directory; read the installed package/fixture | None; `demo` analyzes synthetic data |
+| `bind`, `import`, `analyze`, `sessions` | Read case metadata/evidence; write the case lock and relevant case files/reports; `import` also needs read access to the supplied JSON/JSONL export | No endpoint or cloud connection |
+| `verify` | Read case metadata, registered raw files and precision sidecars; write access to the case lock file | Does not open recorded external source paths or invoke Velociraptor; it is not a strictly read-only filesystem operation because of locking |
+| `lab` | Read/execute an approved Velociraptor binary and read the bundled fixture; create/write case and diagnostic files | Executes local VQL over synthetic data with the caller's token |
+| `local` | Read/traverse the explicit exported-EVTX directory and selected files; read/execute the approved Velociraptor binary; write case/diagnostics; installed optional exact parser | Executes Velociraptor and a Python parser subprocess locally; no automatic elevation or remote API connection |
+
+A normal account with these filesystem and execution permissions is sufficient for offline evidence analysis; administrator/root privileges are not inherently required. Keep originals separate and grant output access only to authorized investigators. The source is read for analysis, but case manifests, raw copies, reports, locks and diagnostics are written locally. Source preservation does not mean zero filesystem writes. See the implemented [CLI](src/crumbtrail/cli.py), [case locking/storage](src/crumbtrail/storage.py) and [native runner](src/crumbtrail/native.py).
+
+### Obtaining Windows evidence is a separate permission boundary
+
+CrumbTrail's `import` consumes an existing export; it does not obtain Windows channel access for you. Its `local` command parses supplied files, rather than exporting live event channels. An authorized evidence custodian must first obtain the evidence with an approved collection/export method.
+
+For Windows Event Log API access, evaluate the operator/service token against each source channel's effective read permissions and policy. The channels used here are **Security**, **System**, **Microsoft-Windows-Sysmon/Operational**, **Microsoft-Windows-PowerShell/Operational**, and **Microsoft-Windows-Windows Defender/Operational**. Do not assume that membership in Event Log Readers grants every channel, or that one successful channel proves the other four are readable. Security-log access deserves separate verification; privilege requirements depend on the acquisition API and policy. Microsoft's legacy Event Logging API documents `SeSecurityPrivilege` for Security-log access, but this is not a blanket requirement for parsing an already-exported `Security.evtx`. Do not grant that broad privilege solely to run offline CrumbTrail. [Windows event-log access rights](https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/set-event-log-security-locally-or-via-group-policy), [legacy Security-log privilege distinction](https://learn.microsoft.com/en-us/windows/win32/eventlog/event-logging-security).
+
+Reading an exported EVTX file instead requires access to that file and its containing directories; live channel access and exported-file ACLs are different checks. A custodian's export also needs an authorized writable destination. Missing files, denied access, disabled telemetry or incomplete retention are limitations to record, not reasons to clear logs, change channel ACLs, enable privileges or elevate automatically. Windows provides separate read/query, export and configuration operations; only use operations approved for the collection. [Microsoft wevtutil reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/wevtutil).
+
+The packaged [WindowsTriage artifact](src/crumbtrail/data/Custom.CrumbTrail.WindowsTriage.yaml) is a Windows client artifact with an empty `LogDirectory` default and a nonblank-path precondition. It invokes `Artifact.Windows.EventLogs.Evtx` on the five explicitly named files under that directory. This is not a sandbox: an explicitly supplied live-log path would still be subject to that execution identity's access and must not be substituted for an authorized export. Direct artifact use in an existing Velociraptor deployment requires that deployment's separate artifact/collection authorization and the client's actual file permissions; CrumbTrail supplies neither server credentials nor deployment rights. Code inspection verifies these controls, not their runtime acceptance on every deployment. Review [validation limits](docs/validation.md) before native use.
+
 ## Install and try
 
 See [prerequisites and platform-specific setup](docs/prerequisites.md) for isolated environments, optional EVTX dependencies and native Windows limitations.
