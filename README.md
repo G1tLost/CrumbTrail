@@ -1,10 +1,14 @@
 # CrumbTrail
 
+![CrumbTrail endpoint investigation banner](assets/CrumbTrail-Banner.png)
+
 Independent Windows event triage with original-byte preservation, a UTC timeline, logon-session views, and an offline report. CrumbTrail 0.3.0 reads native Velociraptor event exports or parses an explicitly supplied EVTX directory with exact source timestamps. It needs no email account, cloud connector, sibling repository, or shared evidence engine.
 
 The Python package is `crumbtrail`, the distribution is `crumbtrail-ir`, and the CLI is `crumbtrail`. Python 3.11 or newer is required. The base offline workflow uses only the standard library. `local` additionally requires the optional `evtx` extra, pinned to `python-evtx==0.8.1`; no parser dependency is required to verify or analyze a completed case. Velociraptor is required for `lab` and `local`.
 
 ## Install and try
+
+See [prerequisites and platform-specific setup](docs/prerequisites.md) for isolated environments, optional EVTX dependencies and native Windows limitations.
 
 From this repository:
 
@@ -60,6 +64,8 @@ The [bounded EVTX lab runner](docs/evtx-lab.md) compares this actual native path
 
 Exact local parsing reads the BinXML `Event/System/TimeCreated/@SystemTime` FILETIME substitution and binds its bytes to the source hash, record/field offsets, XML identity and original native result row. It does not substitute record-header time or Windows-oracle results. Ambiguous/missing matches, changed sources, unsupported parser versions and malformed nonzero chunks fail the operation. See [exact-time design and compatibility](docs/exact-time.md).
 
+The WindowsTriage artifact now has an empty `LogDirectory` default and a nonblank-path precondition, including when run directly in Velociraptor. An omitted/blank path does not fall back to current-host logs. Operators must supply an authorized exported-log directory; this guard is not a filesystem sandbox and does not certify the provenance of a supplied directory. The local CLI additionally checks that the supplied directory exists.
+
 The two artifact YAML files are packaged under `src/crumbtrail/data`. They may be installed in an existing Velociraptor deployment using its normal artifact management, then the full unnamed source can be exported for `import`. **Version 0.2 has no remote API client, artifact installer, server provisioning, remote scheduling, pagination, or collection resume command.** Do not treat a local lab pass as validation of a server deployment. [Velociraptor server API documentation](https://docs.velociraptor.app/docs/server_automation/server_api/)
 
 ## Logon-session views
@@ -114,7 +120,7 @@ crumbtrail analyze --root D:\Cases\example
 
 `verify` checks registered raw and precision-sidecar hashes, sizes, rows, source/identity bindings, provenance checksums and endpoint binding. Missing, changed or unregistered sidecars stop verification. It never opens source paths recorded in an imported case, so a Windows case remains verifiable offline on another platform without the EVTX extra. Original EVTX files remain separately controlled evidence; the sidecar preserves their hashes and exact field bytes, not full EVTX copies. The manifest/checksums are unsigned and can be rewritten by someone controlling the whole case. Native diagnostics remain operational logs. Derived JSON/CSV/HTML can be regenerated after verification.
 
-Rules correlate only within an endpoint, organization, and simulation status. A shared logon ID within 30 minutes gives context; a recovery-related command records an attempt; six distinct paths within two minutes plus a recovery-note-like filename creates a suspicious observation. None establishes that encryption occurred or that an account was compromised. Missing coverage, row-limit hits, and count mismatches are visible gaps. Absence of a finding is not a clean-host verdict.
+Rules correlate only within an endpoint, organization, and simulation status. Logon/process findings use the same full-scope source-ID membership as the session view: repeated starts, conflicting IDs, provider conflicts, logoff/startup cutoffs and coincident boundaries suppress an unsupported association. A uniquely linked observed start within 30 minutes gives context; a recovery-related command records an attempt; six distinct paths within two minutes plus a recovery-note-like filename creates a suspicious observation. None establishes that encryption occurred or that an account was compromised. Missing coverage, row-limit hits, and count mismatches are visible gaps. Absence of a finding is not a clean-host verdict.
 
 Exit codes: `0` completed without reported gaps, `1` runtime/input/integrity error, `2` report generated with coverage gaps (also standard argparse usage errors), `130` interruption. `create`, `bind`, and `verify` report their own operation result, not a complete-coverage verdict.
 
