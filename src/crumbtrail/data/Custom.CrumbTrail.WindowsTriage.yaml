@@ -4,14 +4,17 @@ description: |
   Returns native parsed Windows events and per-log collection coverage.
   Reads selected event IDs in an explicit UTC window.
 type: CLIENT
-precondition: SELECT OS FROM info() WHERE OS = "windows"
+# No current-host default: omitted/blank export paths fail the precondition
+# before the source query can expand paths or read event logs.
+precondition: SELECT OS FROM info() WHERE OS = "windows" AND LogDirectory =~ '[^[:space:]]'
 parameters:
   - name: StartDate
     type: timestamp
   - name: EndDate
     type: timestamp
   - name: LogDirectory
-    default: '%SystemRoot%\System32\winevt\Logs'
+    default: ''
+    description: Explicit directory of previously exported EVTX files; required.
 sources:
   - query: |
       LET Logs = SELECT * FROM parse_csv(accessor="data", filename='''Channel,File
